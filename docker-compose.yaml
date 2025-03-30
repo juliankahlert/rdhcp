@@ -1,0 +1,13 @@
+version: "3"
+services:
+  dhcp-server:
+    build: ./server
+    network_mode: bridge
+    privileged: true  # Required for network control
+
+  dhcp-client:
+    build: ./client
+    network_mode: bridge
+    depends_on:
+    - dhcp-server
+    command: ["dhclient", "-v", "eth0"]

@@ -1,0 +1,27 @@
+name: CI Test DHCP
+on: [push, pull_request]
+
+jobs:
+  test-dhcp:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Docker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y docker-compose
+
+      - name: Build and run DHCP server and client
+        run: |
+          docker-compose up --build -d
+          sleep 10  # Give it time to assign an IP
+          echo "============ server logs ============"
+          docker logs rdhcp_dhcp-server_1
+          echo "============ client logs ============"
+          docker logs rdhcp_dhcp-client_1
+
+      - name: Check logs for successful DHCP lease
+        run: |
+          docker logs rdhcp_dhcp-client_1 2>&1 | grep "bound to" || exit 1
