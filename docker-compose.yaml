@@ -4,6 +4,8 @@ services:
     build: ./server
     network_mode: bridge
     privileged: true  # Required for network control
+    volumes:
+    - ./target/release/examples/example-server:/usr/local/bin/server
 
   dhcp-client:
     build: ./client
