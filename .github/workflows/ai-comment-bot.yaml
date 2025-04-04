@@ -1,0 +1,24 @@
+name: PR Comment Listener
+
+on:
+  issue_comment:
+    types:
+    - created
+
+permissions: write-all
+jobs:
+  process-pr-comment:
+    if: github.event.issue.pull_request != null  # Only run on PR comments
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repo
+      uses: actions/checkout@v3
+
+    - name: AI Comment Bot
+      uses: juliankahlert/ai-comment-bot@main
+      with:
+        GITHUB_TOKEN: ${{ secrets.BOT_TOKEN }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        OPENAI_API_MODEL: "gpt-4o-mini-2024-07-18"
+
