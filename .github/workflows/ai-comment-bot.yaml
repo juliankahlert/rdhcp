@@ -10,12 +10,15 @@ on:
 permissions: write-all
 jobs:
   process-pr-comment:
-    if: github.event.issue.pull_request != null  # Only run on PR comments
+#    if: github.event.issue.pull_request != null  # Only run on PR comments
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout Repo
       uses: actions/checkout@v3
+
+    - name: Echo trigger info
+      run: echo "Triggered by ${{ github.event_name }}"
 
     - name: AI Comment Bot
       uses: juliankahlert/ai-comment-bot@main
