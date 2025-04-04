@@ -23,7 +23,7 @@ jobs:
     - name: AI Comment Bot
       uses: juliankahlert/ai-comment-action@main
       with:
-        GITHUB_TOKEN: ${{ secrets.BOT_TOKEN }}
+        BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         OPENAI_API_MODEL: "gpt-4o-mini-2024-07-18"
 
