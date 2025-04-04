@@ -18,7 +18,7 @@ jobs:
       uses: actions/checkout@v3
 
     - name: AI Code Reviewer
-      uses: juliankahlert/ai-codereviewer@wip2
+      uses: juliankahlert/ai-codereviewer@wip3
       with:
         GITHUB_TOKEN: ${{ secrets.BOT_TOKEN }}
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
