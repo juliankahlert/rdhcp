@@ -2,28 +2,27 @@ name: PR Comment Listener
 
 on:
   pull_request_review_comment:
-    types: [created]
-  issue_comment:
+    types:
+    - created
   pull_request:
-    types: [synchronize, reopened, labeled]
+    types:
+    - synchronize,
+    - opened
 
 permissions: write-all
 jobs:
   process-pr-comment:
-#    if: github.event.issue.pull_request != null  # Only run on PR comments
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout Repo
       uses: actions/checkout@v3
 
-    - name: Echo trigger info
-      run: echo "Triggered by ${{ github.event_name }}"
-
-    - name: AI Comment Bot
+    - name: AI Review Bot
       uses: juliankahlert/ai-comment-action@main
       with:
         BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         OPENAI_API_MODEL: "gpt-4o-mini-2024-07-18"
+        exclude: "**/*.json, **/*.md, **/*.toml, **/*.lock"
 
