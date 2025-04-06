@@ -88,7 +88,7 @@ impl fmt::Display for DhcpHType {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum DhcpFlag {
     None = 0,
     Broadcast = 1 << 0,
@@ -136,7 +136,7 @@ impl From<u16> for DhcpFlags {
 
 impl DhcpFlags {
     pub fn have(&self, flag: DhcpFlag) -> bool {
-        (self.value & (flag.clone() as u16)) == (flag as u16)
+        (self.value & (flag as u16)) == (flag as u16)
     }
 
     pub fn add(&mut self, flag: DhcpFlag) {
@@ -280,8 +280,9 @@ impl DhcpPacketRaw {
         let binding = String::from_utf8_lossy(&self.header.file);
         let file = binding.trim_matches(char::from(0));
 
-        println!("  Server Name: {}", sname);
-        println!("  Boot File Name: {}", file);
+        /* This is bad, do not use println! in production code */
+        println!("  Server Name: <{}>", sname);
+        println!("  Boot File Name: <{}>", file);
     }
 }
 
