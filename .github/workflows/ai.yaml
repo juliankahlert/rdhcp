@@ -10,15 +10,18 @@ permissions: write-all
 jobs:
   review:
     runs-on: ubuntu-latest
+    env:
+      ACTIONS_STEP_DEBUG: true  # Enable debugging logs
+
     steps:
     - name: Checkout Repo
       uses: actions/checkout@v3
 
-    - name: AI Code Reviewer
-      uses: juliankahlert/ai-codereviewer@wip
-      with:
-        GITHUB_TOKEN: ${{ secrets.BOT_TOKEN }}
-        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        OPENAI_API_MODEL: "gpt-4o"
-        exclude: "**/*.json, **/*.md, **/*.toml, **/*.lock, **/*.yaml"
+#    - name: AI Code Reviewer
+#      uses: juliankahlert/ai-codereviewer@stable
+#      with:
+#        GITHUB_TOKEN: ${{ secrets.BOT_TOKEN }}
+#        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+#        OPENAI_API_MODEL: "gpt-4o-mini-2024-07-18"
+#        exclude: "**/*.json, **/*.md, **/*.toml, **/*.lock, **/*.yaml"
 
