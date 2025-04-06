@@ -9,4 +9,10 @@ ip link set eth0 up
 ip a
 
 # Start the server
-dhcpd -f -d -lf dhcpd.leases
+# dhcpd -f -d -lf dhcpd.leases
+which server
+ls -la $(which server)
+stat $(which server)
+
+chmod +x $(which server)
+server
