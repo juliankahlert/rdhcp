@@ -88,7 +88,7 @@ impl fmt::Display for DhcpHType {
 }
 
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum DhcpFlag {
     None = 0,
     Broadcast = 1 << 0,
@@ -136,7 +136,7 @@ impl From<u16> for DhcpFlags {
 
 impl DhcpFlags {
     pub fn have(&self, flag: DhcpFlag) -> bool {
-        (self.value & (flag as u16)) == 1
+        (self.value & (flag.clone() as u16)) == (flag as u16)
     }
 
     pub fn add(&mut self, flag: DhcpFlag) {
