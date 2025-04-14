@@ -3,6 +3,8 @@ use std::net::Ipv4Addr;
 
 use std::convert::From;
 
+pub mod server;
+
 #[repr(C)]
 #[derive(Debug)]
 pub enum DhcpOpCode {
@@ -169,7 +171,6 @@ impl fmt::Display for DhcpFlags {
     }
 }
 
-#[repr(C)]
 #[derive(Debug)]
 pub struct DhcpHeader {
     op: DhcpOpCode,   // Message op code (1 byte)
@@ -188,42 +189,53 @@ pub struct DhcpHeader {
     file: [u8; 128],  // Boot file name (128 bytes)
 }
 
-/*
-#[repr(C)]
-#[derive(Debug)]
-struct DhcpHeader {
-    op: u8,           // Message op code (1 byte)
-    htype: u8,        // Hardware address type (1 byte)
-    hlen: u8,         // Hardware address length (1 byte)
-    hops: u8,         // Number of hops (1 byte)
-    xid: u32,         // Transaction ID (4 bytes)
-    secs: u16,        // Seconds elapsed (2 bytes)
-    flags: u16,       // Flags (2 bytes)
-    ciaddr: u32,      // Client IP address (4 bytes)
-    yiaddr: u32,      // Your IP address (4 bytes)
-    siaddr: u32,      // Server IP address (4 bytes)
-    giaddr: u32,      // Gateway IP address (4 bytes)
-    chaddr: [u8; 16], // Client hardware address (16 bytes)
-    sname: [u8; 64],  // Server name (64 bytes)
-    file: [u8; 128],  // Boot file name (128 bytes)
-}
-*/
-
 // Struct to represent a DHCP packet, including options
 #[derive(Debug)]
-struct DhcpPacketRaw {
+pub struct DhcpPacket {
     header: DhcpHeader,
-    options: Vec<u8>,
+    options: Vec<DhcpOption>,
 }
 
-impl DhcpPacketRaw {
-    fn parse_options(&self) -> Option<u8> {
-        if self.options.len() > 0 {
-            // The first byte of the options field usually represents the message type
-            Some(self.options[0])
-        } else {
-            None
+#[derive(Debug)]
+struct DhcpOption {
+    code: u8,
+    length: u8,
+    value: Vec<u8>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum DhcpMessageType {
+    Discover = 1,
+    Offer = 2,
+    Request = 3,
+    Decline = 4,
+    Ack = 5,
+    Nak = 6,
+    Release = 7,
+    Inform = 8,
+    Unknown(u8),
+}
+
+impl DhcpPacket {
+    pub fn message_type(&self) -> Option<DhcpMessageType> {
+        for opt in &self.options {
+            if opt.code == 53 && opt.length == 1 {
+                return Some(match opt.value[0] {
+                    1 => DhcpMessageType::Discover,
+                    2 => DhcpMessageType::Offer,
+                    3 => DhcpMessageType::Request,
+                    4 => DhcpMessageType::Decline,
+                    5 => DhcpMessageType::Ack,
+                    6 => DhcpMessageType::Nak,
+                    7 => DhcpMessageType::Release,
+                    8 => DhcpMessageType::Inform,
+                    other => DhcpMessageType::Unknown(other),
+                });
+            }
         }
+
+        None
     }
 
     // Helper function to convert an IP address from a u32 to an Ipv4Addr
@@ -233,7 +245,7 @@ impl DhcpPacketRaw {
     }
 
     // Method to decode and display the DHCP header information in a readable format
-    fn decode_header(&self) {
+    pub fn decode_header(&self) {
         let op = &self.header.op;
         let htype = &self.header.htype;
         let flags = &self.header.flags;
@@ -248,19 +260,19 @@ impl DhcpPacketRaw {
         println!("  Flags: {}", flags);
         println!(
             "  Client IP: {}",
-            DhcpPacketRaw::ip_to_string(self.header.ciaddr)
+            DhcpPacket::ip_to_string(self.header.ciaddr)
         );
         println!(
             "  Your IP: {}",
-            DhcpPacketRaw::ip_to_string(self.header.yiaddr)
+            DhcpPacket::ip_to_string(self.header.yiaddr)
         );
         println!(
             "  Server IP: {}",
-            DhcpPacketRaw::ip_to_string(self.header.siaddr)
+            DhcpPacket::ip_to_string(self.header.siaddr)
         );
         println!(
             "  Gateway IP: {}",
-            DhcpPacketRaw::ip_to_string(self.header.giaddr)
+            DhcpPacket::ip_to_string(self.header.giaddr)
         );
 
         // Client MAC address
@@ -286,41 +298,104 @@ impl DhcpPacketRaw {
     }
 }
 
-// Parsing DHCP packet
-fn parse_dhcp_packet(data: &[u8]) -> Option<DhcpPacketRaw> {
-    if data.len() < std::mem::size_of::<DhcpHeader>() {
-        return None; // Not enough data for the DHCP header
+fn parse_dhcp_packet_priv(data: &[u8]) -> Option<DhcpPacket> {
+    const HEADER_LEN: usize = 236;
+
+    if data.len() < HEADER_LEN {
+        return None;
     }
 
-    let header: DhcpHeader = unsafe { std::ptr::read(data.as_ptr() as *const DhcpHeader) };
-    let options = &data[std::mem::size_of::<DhcpHeader>()..];
+    let header = DhcpHeader {
+        op: DhcpOpCode::from(data[0]),
+        htype: DhcpHType::from(data[1]),
+        hlen: data[2],
+        hops: data[3],
+        xid: u32::from_be_bytes(data[4..8].try_into().ok()?),
+        secs: u16::from_be_bytes(data[8..10].try_into().ok()?),
+        flags: DhcpFlags::from(u16::from_be_bytes(data[10..12].try_into().ok()?)),
+        ciaddr: u32::from_be_bytes(data[12..16].try_into().ok()?),
+        yiaddr: u32::from_be_bytes(data[16..20].try_into().ok()?),
+        siaddr: u32::from_be_bytes(data[20..24].try_into().ok()?),
+        giaddr: u32::from_be_bytes(data[24..28].try_into().ok()?),
+        chaddr: data[28..44].try_into().ok()?,
+        sname: data[44..108].try_into().ok()?,
+        file: data[108..236].try_into().ok()?,
+    };
 
-    Some(DhcpPacketRaw {
+    let options = data[236..].to_vec();
+
+    Some(DhcpPacket {
         header,
-        options: options.to_vec(),
+        options: parse_dhcp_options(&options),
     })
 }
 
-pub fn parse_dhcp_packet2(data: &[u8]) {
-    println!("<{:?}>", data);
-    if let Some(packet) = parse_dhcp_packet(data) {
+fn parse_dhcp_options(data: &[u8]) -> Vec<DhcpOption> {
+    let mut options = Vec::new();
+
+    // Check for the DHCP magic cookie
+    const DHCP_MAGIC_COOKIE: [u8; 4] = [99, 130, 83, 99];
+    if data.len() < 4 || data[0..4] != DHCP_MAGIC_COOKIE {
+        eprintln!("Invalid DHCP magic cookie");
+        return options;
+    }
+
+    let mut i = 4; // Start parsing after the magic cookie
+
+    while i < data.len() {
+        let code = data[i];
+
+        match code {
+            0 => {
+                // Pad option (just move on)
+                i += 1;
+            }
+            255 => {
+                // End option
+                break;
+            }
+            _ => {
+                if i + 1 >= data.len() {
+                    eprintln!("Malformed option at index {}", i);
+                    break;
+                }
+
+                let length = data[i + 1] as usize;
+                if i + 2 + length > data.len() {
+                    eprintln!("Option (code {}) at index {} exceeds data length", code, i);
+                    break;
+                }
+
+                let value = data[i + 2..i + 2 + length].to_vec();
+                options.push(DhcpOption {
+                    code,
+                    length: length as u8,
+                    value,
+                });
+
+                i += 2 + length;
+            }
+        }
+    }
+
+    options
+}
+
+pub fn parse_dhcp_packet(data: &[u8]) -> Result<DhcpPacket, String> {
+    if let Some(packet) = parse_dhcp_packet_priv(data) {
         // Decode and display the header information
         packet.decode_header();
 
-        // Optionally, print the message type if available
-        if let Some(message_type) = packet.parse_options() {
-            println!("DHCP Message Type: {}", message_type);
-        }
-    } else {
-        println!("Failed to parse DHCP packet");
+        return Ok(packet);
     }
-    println!();
+
+    Err("Failed to parse DHCP packet".to_string())
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::parse_dhcp_packet;
     use std::mem::MaybeUninit;
-    use crate::parse_dhcp_packet2;
 
     #[test]
     fn test() {
@@ -356,7 +431,7 @@ mod tests {
                         .collect();
 
                     // Process the received DHCP packet
-                    parse_dhcp_packet2(&data);
+                    parse_dhcp_packet(&data);
                 }
                 Err(e) => {
                     println!("Error reading from socket: {}", e);
