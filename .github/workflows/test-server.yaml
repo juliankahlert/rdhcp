@@ -24,7 +24,15 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Build Example Server
-        run: cargo build --examples
+        run: cargo build --release --examples
+
+      - name: Cache apt cache
+        uses: actions/cache@v3
+        with:
+          path: /var/cache/apt
+          key: ${{ runner.os }}-apt-cache
+          restore-keys: |
+            ${{ runner.os }}-apt-cache
 
       - name: Set up Docker
         run: |
@@ -34,11 +42,12 @@ jobs:
       - name: Build and run DHCP server and client
         run: |
           docker-compose up --build -d
-          sleep 10  # Give it time to assign an IP
+          sleep 60  # Give it time to assign an IP
           echo "============ server logs ============"
           docker logs rdhcp_dhcp-server_1
           echo "============ client logs ============"
           docker logs rdhcp_dhcp-client_1
+          echo "====================================="
 
       - name: Check logs for successful DHCP lease
         run: |

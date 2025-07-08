@@ -3,7 +3,12 @@ use std::net::Ipv4Addr;
 
 use std::convert::From;
 
+mod permissions;
 pub mod server;
+
+use server::ServerPacket;
+
+use log::trace;
 
 #[repr(C)]
 #[derive(Debug)]
@@ -13,8 +18,8 @@ pub enum DhcpOpCode {
     Invalid,
 }
 
-impl From<DhcpOpCode> for u8 {
-    fn from(op: DhcpOpCode) -> Self {
+impl From<&DhcpOpCode> for u8 {
+    fn from(op: &DhcpOpCode) -> Self {
         match op {
             DhcpOpCode::Request => 1u8,
             DhcpOpCode::Response => 2u8,
@@ -54,8 +59,8 @@ pub enum DhcpHType {
     Unknown,
 }
 
-impl From<DhcpHType> for u8 {
-    fn from(value: DhcpHType) -> Self {
+impl From<&DhcpHType> for u8 {
+    fn from(value: &DhcpHType) -> Self {
         match value {
             DhcpHType::Ethernet => 1u8,
             DhcpHType::IEEE802 => 6u8,
@@ -124,8 +129,8 @@ pub struct DhcpFlags {
     value: u16,
 }
 
-impl From<DhcpFlags> for u16 {
-    fn from(value: DhcpFlags) -> Self {
+impl From<&DhcpFlags> for u16 {
+    fn from(value: &DhcpFlags) -> Self {
         value.value
     }
 }
@@ -203,6 +208,150 @@ struct DhcpOption {
     value: Vec<u8>,
 }
 
+const DHCP_HEADER_SIZE: usize = 236;
+const DHCP_MAGIC_COOKIE_SIZE: usize = 4;
+const DHCP_OPTIONS_SIZE: usize = 312;
+
+impl From<DhcpPacket> for Vec<u8> {
+    fn from(packet: DhcpPacket) -> Self {
+        let mut buffer =
+            Vec::with_capacity(DHCP_HEADER_SIZE + DHCP_MAGIC_COOKIE_SIZE + DHCP_OPTIONS_SIZE);
+
+        // Write fixed header fields in order
+        buffer.push(u8::from(&packet.header.op));
+        buffer.push(u8::from(&packet.header.htype));
+        buffer.push(packet.header.hlen);
+        buffer.push(packet.header.hops);
+
+        buffer.extend_from_slice(&packet.header.xid.to_be_bytes());
+        buffer.extend_from_slice(&packet.header.secs.to_be_bytes());
+        buffer.extend_from_slice(&u16::from(&packet.header.flags).to_be_bytes());
+        buffer.extend_from_slice(&packet.header.ciaddr.to_be_bytes());
+        buffer.extend_from_slice(&packet.header.yiaddr.to_be_bytes());
+        buffer.extend_from_slice(&packet.header.siaddr.to_be_bytes());
+        buffer.extend_from_slice(&packet.header.giaddr.to_be_bytes());
+
+        // chaddr is 16 bytes, pad or trim if necessary
+        // The array is fixed to 16, so just send all
+        buffer.extend_from_slice(&packet.header.chaddr);
+
+        // sname is 64 bytes
+        buffer.extend_from_slice(&packet.header.sname);
+
+        // file is 128 bytes
+        buffer.extend_from_slice(&packet.header.file);
+
+        // Magic cookie before options
+        const DHCP_MAGIC_COOKIE: [u8; 4] = [99, 130, 83, 99];
+        buffer.extend_from_slice(&DHCP_MAGIC_COOKIE);
+
+        // Write options in order
+        for option in &packet.options {
+            buffer.push(option.code);
+            if option.code == DHCP_END_CODE {
+                // End option has no length or value fields per RFC
+                // Just break after adding it
+                break;
+            }
+            buffer.push(option.length);
+            buffer.extend_from_slice(&option.value);
+        }
+
+        // If options did not contain an END code, add it
+        if packet.options.iter().all(|opt| opt.code != DHCP_END_CODE) {
+            buffer.push(DHCP_END_CODE);
+        }
+
+        buffer
+    }
+}
+
+const DHCP_MESSAGE_TYPE_CODE: u8 = 53;
+const DHCP_OFFER_VALUE: u8 = 2;
+const DHCP_ACK_VALUE: u8 = 5;
+const DHCP_NAK_VALUE: u8 = 6;
+const DHCP_LEASE_TIME_CODE: u8 = 51;
+const DHCP_SERVER_IDENTIFIER_CODE: u8 = 54;
+const DHCP_ROUTER_CODE: u8 = 3;
+const DHCP_DNS_CODE: u8 = 6;
+const DHCP_SUBNET_MASK_CODE: u8 = 1;
+const DHCP_END_CODE: u8 = 255;
+
+impl DhcpOption {
+    pub fn message_type(value: u8) -> Self {
+        DhcpOption {
+            code: DHCP_MESSAGE_TYPE_CODE,
+            length: 1,
+            value: vec![value],
+        }
+    }
+
+    pub fn lease_time(value: u32) -> Self {
+        DhcpOption {
+            code: DHCP_LEASE_TIME_CODE,
+            length: 4,
+            value: value.to_be_bytes().to_vec(),
+        }
+    }
+
+    pub fn server_identifier(addr: Ipv4Addr) -> Self {
+        DhcpOption {
+            code: DHCP_SERVER_IDENTIFIER_CODE,
+            length: 4,
+            value: addr.octets().to_vec(),
+        }
+    }
+
+    pub fn router(addrs: &[Ipv4Addr]) -> Self {
+        let mut value = Vec::with_capacity(addrs.len() * 4);
+        for addr in addrs {
+            value.extend_from_slice(&addr.octets());
+        }
+        DhcpOption {
+            code: DHCP_ROUTER_CODE,
+            length: value.len() as u8,
+            value,
+        }
+    }
+
+    pub fn dns(addrs: &[Ipv4Addr]) -> Self {
+        let mut value = Vec::with_capacity(addrs.len() * 4);
+        for addr in addrs {
+            value.extend_from_slice(&addr.octets());
+        }
+        DhcpOption {
+            code: DHCP_DNS_CODE,
+            length: value.len() as u8,
+            value,
+        }
+    }
+
+    pub fn subnet_mask(addr: Ipv4Addr) -> Self {
+        DhcpOption {
+            code: DHCP_SUBNET_MASK_CODE,
+            length: 4,
+            value: addr.octets().to_vec(),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn string_option(code: u8, string: &str) -> Self {
+        DhcpOption {
+            code,
+            length: string.len() as u8,
+            value: string.as_bytes().to_vec(),
+        }
+    }
+
+    pub fn end() -> Self {
+        DhcpOption {
+            code: DHCP_END_CODE,
+            length: 0,
+            value: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum DhcpMessageType {
@@ -218,6 +367,7 @@ pub enum DhcpMessageType {
 }
 
 /// Parses a single u8 value from the option.
+#[allow(dead_code)]
 fn parse_u8_option(options: &[DhcpOption], code: u8) -> Option<u8> {
     options
         .iter()
@@ -226,6 +376,7 @@ fn parse_u8_option(options: &[DhcpOption], code: u8) -> Option<u8> {
 }
 
 /// Parses a u16 value from the option.
+#[allow(dead_code)]
 fn parse_u16_option(options: &[DhcpOption], code: u8) -> Option<u16> {
     options
         .iter()
@@ -292,7 +443,148 @@ fn parse_ipv4_list_option(options: &[DhcpOption], code: u8) -> Vec<Ipv4Addr> {
         })
 }
 
+impl From<ServerPacket> for DhcpPacket {
+    fn from(server_packet: ServerPacket) -> Self {
+        match server_packet {
+            ServerPacket::DhcpOffer {
+                xid,
+                yiaddr,
+                chaddr,
+                siaddr,
+                lease_time,
+                giaddr,
+                diaddrs,
+                subnet,
+                options: extra_options,
+            } => {
+                let header = DhcpHeader {
+                    op: DhcpOpCode::Response,
+                    htype: DhcpHType::Ethernet,
+                    hlen: chaddr.len() as u8,
+                    hops: 0,
+                    xid,
+                    secs: 0,
+                    flags: DhcpFlags::from(0),
+                    ciaddr: 0,
+                    yiaddr: u32::from_be_bytes(yiaddr.octets()),
+                    siaddr: u32::from_be_bytes(siaddr.octets()),
+                    giaddr: u32::from_be_bytes(giaddr.octets()),
+                    chaddr,
+                    sname: [0u8; 64],
+                    file: [0u8; 128],
+                };
+                let mut options = Vec::new();
+                options.push(DhcpOption::message_type(DHCP_OFFER_VALUE));
+                options.push(DhcpOption::lease_time(lease_time));
+                options.push(DhcpOption::server_identifier(siaddr));
+                options.push(DhcpOption::router(&[giaddr]));
+                options.push(DhcpOption::dns(&diaddrs));
+                options.push(DhcpOption::subnet_mask(subnet));
+                for (code, value) in extra_options {
+                    options.push(DhcpOption {
+                        code,
+                        length: value.len() as u8,
+                        value,
+                    });
+                }
+                options.push(DhcpOption::end());
+                DhcpPacket { header, options }
+            }
+            ServerPacket::DhcpAck {
+                xid,
+                yiaddr,
+                chaddr,
+                siaddr,
+                lease_time,
+                giaddr,
+                diaddrs,
+                subnet,
+                options: extra_options,
+            } => {
+                let header = DhcpHeader {
+                    op: DhcpOpCode::Response,
+                    htype: DhcpHType::Ethernet,
+                    hlen: chaddr.len() as u8,
+                    hops: 0,
+                    xid,
+                    secs: 0,
+                    flags: DhcpFlags::from(0),
+                    ciaddr: 0,
+                    yiaddr: u32::from_be_bytes(yiaddr.octets()),
+                    siaddr: u32::from_be_bytes(siaddr.octets()),
+                    giaddr: u32::from_be_bytes(giaddr.octets()),
+                    chaddr,
+                    sname: [0u8; 64],
+                    file: [0u8; 128],
+                };
+                let mut options = Vec::new();
+                options.push(DhcpOption::message_type(DHCP_ACK_VALUE));
+                options.push(DhcpOption::lease_time(lease_time));
+                options.push(DhcpOption::server_identifier(siaddr));
+                options.push(DhcpOption::router(&[giaddr]));
+                options.push(DhcpOption::dns(&diaddrs));
+                options.push(DhcpOption::subnet_mask(subnet));
+                for (code, value) in extra_options {
+                    options.push(DhcpOption {
+                        code,
+                        length: value.len() as u8,
+                        value,
+                    });
+                }
+                options.push(DhcpOption::end());
+                DhcpPacket { header, options }
+            }
+            ServerPacket::DhcpNak {
+                xid,
+                chaddr,
+                siaddr,
+                options: extra_options,
+            } => {
+                let header = DhcpHeader {
+                    op: DhcpOpCode::Response,
+                    htype: DhcpHType::Ethernet,
+                    hlen: chaddr.len() as u8,
+                    hops: 0,
+                    xid,
+                    secs: 0,
+                    flags: DhcpFlags::from(0),
+                    ciaddr: 0,
+                    yiaddr: 0,
+                    siaddr: u32::from_be_bytes(siaddr.octets()),
+                    giaddr: 0,
+                    chaddr,
+                    sname: [0u8; 64],
+                    file: [0u8; 128],
+                };
+                let mut options = Vec::new();
+                options.push(DhcpOption::message_type(DHCP_NAK_VALUE));
+                for (code, value) in extra_options {
+                    options.push(DhcpOption {
+                        code,
+                        length: value.len() as u8,
+                        value,
+                    });
+                }
+                options.push(DhcpOption::end());
+                DhcpPacket { header, options }
+            }
+        }
+    }
+}
+
 impl DhcpPacket {
+    pub fn transmission_id(&self) -> u32 {
+        self.header.xid
+    }
+
+    pub fn client_hardware_address(&self) -> [u8; 16] {
+        self.header.chaddr.clone()
+    }
+
+    pub fn your_address(&self) -> Ipv4Addr {
+        Ipv4Addr::from(self.header.yiaddr)
+    }
+
     pub fn message_type(&self) -> Option<DhcpMessageType> {
         for opt in &self.options {
             if opt.code == 53 && opt.length == 1 {
@@ -495,33 +787,33 @@ impl DhcpPacket {
         Ipv4Addr::new(ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]).to_string()
     }
 
-    // Method to decode and display the DHCP header information in a readable format
+    // Method to decode and display the DHCP header information in a readable format using trace!()
     pub fn decode_header(&self) {
         let op = &self.header.op;
         let htype = &self.header.htype;
         let flags = &self.header.flags;
 
-        println!("DHCP Header Information:");
-        println!("  Operation: {}", op);
-        println!("  Hardware Type: {}", htype);
-        println!("  Hardware Length: {}", self.header.hlen);
-        println!("  Hops: {}", self.header.hops);
-        println!("  Transaction ID (XID): {:#010x}", self.header.xid);
-        println!("  Seconds: {}", self.header.secs);
-        println!("  Flags: {}", flags);
-        println!(
+        trace!("DHCP Header Information:");
+        trace!("  Operation: {}", op);
+        trace!("  Hardware Type: {}", htype);
+        trace!("  Hardware Length: {}", self.header.hlen);
+        trace!("  Hops: {}", self.header.hops);
+        trace!("  Transaction ID (XID): {:#010x}", self.header.xid);
+        trace!("  Seconds: {}", self.header.secs);
+        trace!("  Flags: {}", flags);
+        trace!(
             "  Client IP: {}",
             DhcpPacket::ip_to_string(self.header.ciaddr)
         );
-        println!(
+        trace!(
             "  Your IP: {}",
             DhcpPacket::ip_to_string(self.header.yiaddr)
         );
-        println!(
+        trace!(
             "  Server IP: {}",
             DhcpPacket::ip_to_string(self.header.siaddr)
         );
-        println!(
+        trace!(
             "  Gateway IP: {}",
             DhcpPacket::ip_to_string(self.header.giaddr)
         );
@@ -534,7 +826,7 @@ impl DhcpPacket {
             .map(|b| format!("{:02x}", b))
             .collect::<Vec<String>>()
             .join(":");
-        println!("  Client MAC Address: {}", mac_addr);
+        trace!("  Client MAC Address: {}", mac_addr);
 
         // Print the server name and file
         let binding = String::from_utf8_lossy(&self.header.sname);
@@ -544,8 +836,8 @@ impl DhcpPacket {
         let file = binding.trim_matches(char::from(0));
 
         /* This is bad, do not use println! in production code */
-        println!("  Server Name: <{}>", sname);
-        println!("  Boot File Name: <{}>", file);
+        trace!("  Server Name: <{}>", sname);
+        trace!("  Boot File Name: <{}>", file);
     }
 }
 
@@ -682,7 +974,7 @@ mod tests {
                         .collect();
 
                     // Process the received DHCP packet
-                    parse_dhcp_packet(&data);
+                    let _ = parse_dhcp_packet(&data);
                 }
                 Err(e) => {
                     println!("Error reading from socket: {}", e);

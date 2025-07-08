@@ -1,18 +1,29 @@
 #!/bin/sh
 
-# Set the IP address for eth0 based on the dhcpd.conf network (192.168.1.1/24)
-ip addr add 192.168.1.1/24 dev eth0
+echo "Clearing all existing IPs on eth0..."
+ip addr flush dev eth0
+sleep 1
 
-# Bring up the interface
+echo "Setting IP address 172.20.0.10/24 on eth0..."
+ip addr add 172.20.0.10/24 dev eth0
+ip route add 255.255.255.255 dev eth0
+sleep 1
+
+echo "Bringing interface eth0 up..."
 ip link set eth0 up
+sleep 1
 
+echo "Current IP address configuration:"
 ip a
+sleep 1
 
-# Start the server
-# dhcpd -f -d -lf dhcpd.leases
+echo "Starting the DHCP server..."
+tcpdump -i eth0 -n -s 0 -vvv -l port 68 and port 67 &
+#dhcpd -f -d -lf dhcpd.leases
 which server
 ls -la $(which server)
 stat $(which server)
 
 chmod +x $(which server)
 server
+kill $!

@@ -1,6 +1,6 @@
 FROM ubuntu:latest
 
-RUN apt-get update && apt-get install -y isc-dhcp-server iproute2
+RUN apt-get update && apt-get install -y isc-dhcp-server iproute2 isc-dhcp-client tcpdump
 RUN touch dhcpd.leases
 
 COPY dhcpd.conf /etc/dhcp/dhcpd.conf

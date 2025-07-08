@@ -1,6 +1,8 @@
 FROM ubuntu:latest
 
-RUN apt-get update && apt-get install -y isc-dhcp-client
+RUN apt-get update && apt-get install -y isc-dhcp-server iproute2 isc-dhcp-client tcpdump
 
-CMD ["dhclient", "-v", "eth0"]
+COPY start.sh /usr/local/bin/start.sh
+RUN chmod +x /usr/local/bin/start.sh
 
+CMD ["start.sh"]
