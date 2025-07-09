@@ -1,16 +1,25 @@
-use std::net::Ipv4Addr;
 use log::{debug, error};
+use std::net::Ipv4Addr;
 
-/// Ethernet frame (IEEE 802.3)
-/// Contains Destination MAC, Source MAC, EtherType and Payload
+/// Ethernet frame structure for Layer 2 networking
+/// Holds destination/source MAC addresses, EtherType and payload bytes
+/// Typical use is to encapsulate IPv4 or ARP packets
 pub struct EthernetFrame {
-    pub destination: [u8; 6],
-    pub source: [u8; 6],
-    pub ethertype: u16, // usually 0x0800 for IPv4
-    pub payload: Vec<u8>,
+    pub destination: [u8; 6], // Destination MAC address
+    pub source: [u8; 6],      // Source MAC address
+    pub ethertype: u16,       // EtherType field (e.g. 0x0800 for IPv4)
+    pub payload: Vec<u8>,     // Frame payload (Layer 3 packet)
 }
 
 impl EthernetFrame {
+    /// Creates a new EthernetFrame from given components
+    ///
+    /// # Arguments
+    ///
+    /// * `destination` - Destination MAC address as a 6-byte array
+    /// * `source` - Source MAC address as a 6-byte array
+    /// * `ethertype` - EtherType field indicating the protocol encapsulated in the payload (e.g., 0x0800 for IPv4)
+    /// * `payload` - Payload bytes contained in the Ethernet frame
     pub fn new(destination: [u8; 6], source: [u8; 6], ethertype: u16, payload: Vec<u8>) -> Self {
         EthernetFrame {
             destination,
@@ -20,15 +29,32 @@ impl EthernetFrame {
         }
     }
 
+    /// Create an EthernetFrame encapsulating an IPv4 packet
+    ///
+    /// # Arguments
+    ///
+    /// * `destination` - Destination MAC address as a 6-byte array
+    /// * `source` - Source MAC address as a 6-byte array
+    /// * `payload` - The IPv4 packet to encapsulate inside the Ethernet frame
     pub fn form_ipv4(destination: [u8; 6], source: [u8; 6], mut payload: IpFrame) -> Self {
         EthernetFrame {
             destination,
             source,
-            ethertype: 0x0800,
+            ethertype: 0x0800, // IPv4 EtherType
             payload: payload.to_bytes(),
         }
     }
 
+    /// Construct an EthernetFrame from a UDP frame by wrapping it in an IPv4 packet
+    ///
+    /// # Arguments
+    ///
+    /// * `destination` - Destination MAC address as a 6-byte array
+    /// * `source` - Source MAC address as a 6-byte array
+    /// * `udp_frame` - The UDP frame to encapsulate inside the IPv4 packet
+    /// * `identification` - IPv4 packet identification field
+    /// * `ttl` - Optional time-to-live value for the IPv4 packet (defaults to 128 if None)
+    /// * `ipv4_options` - Optional vector of IPv4 header options bytes
     pub fn from_udp(
         destination: [u8; 6],
         source: [u8; 6],
@@ -37,7 +63,7 @@ impl EthernetFrame {
         ttl: Option<u8>,
         ipv4_options: Option<Vec<u8>>,
     ) -> Self {
-        let ttl = ttl.unwrap_or(64);
+        let ttl = ttl.unwrap_or(128);
         let mut ip_frame = IpFrame::udp(udp_frame, identification, ttl, ipv4_options);
         EthernetFrame {
             destination,
@@ -47,6 +73,21 @@ impl EthernetFrame {
         }
     }
 
+    /// Construct an EthernetFrame from raw datagram payload with UDP encapsulation
+    /// Includes IP addresses, ports, identification, TTL and optional IPv4 header options
+    ///
+    /// # Arguments
+    ///
+    /// * `destination` - Destination MAC address as a 6-byte array
+    /// * `source` - Source MAC address as a 6-byte array
+    /// * `payload` - UDP payload data as a vector of bytes
+    /// * `source_ip` - Source IPv4 address
+    /// * `destination_ip` - Destination IPv4 address
+    /// * `source_port` - Source UDP port number
+    /// * `destination_port` - Destination UDP port number
+    /// * `identification` - IPv4 packet identification field for fragmentation
+    /// * `ttl` - Optional Time-To-Live value for the IP header, defaults to 128 if None
+    /// * `ipv4_options` - Optional IPv4 header options as a vector of bytes
     pub fn from_datagram(
         destination: [u8; 6],
         source: [u8; 6],
@@ -59,7 +100,7 @@ impl EthernetFrame {
         ttl: Option<u8>,
         ipv4_options: Option<Vec<u8>>,
     ) -> Self {
-        let ttl = ttl.unwrap_or(64);
+        let ttl = ttl.unwrap_or(128);
         let udp_frame = UdpFrame::new(
             source_port,
             destination_port,
@@ -76,7 +117,68 @@ impl EthernetFrame {
         }
     }
 
-    /// Build the complete Ethernet frame as a Vec<u8>
+    /// Convenience constructor for DHCP packets
+    ///
+    /// # Arguments
+    ///
+    /// * `destination` - Destination MAC address as a 6-byte array
+    /// * `payload` - The DHCP payload as a vector of bytes
+    /// * `source_ip` - Source IPv4 address from which the DHCP packet originates
+    /// * `destination_ip` - Destination IPv4 address to which the DHCP packet is sent
+    /// * `source_port` - Source UDP port number (usually DHCP client port 68)
+    /// * `destination_port` - Destination UDP port number (usually DHCP server port 67)
+    /// * `identification` - IPv4 packet identification field for fragmentation
+    pub fn from_dhcp(
+        destination: [u8; 6],
+        payload: Vec<u8>,
+        source_ip: Ipv4Addr,
+        destination_ip: Ipv4Addr,
+        source_port: u16,
+        destination_port: u16,
+        identification: u16,
+    ) -> Self {
+        Self::from_datagram(
+            destination,
+            [0; 6], // source MAC set to zero
+            payload,
+            source_ip,
+            destination_ip,
+            source_port,
+            destination_port,
+            identification,
+            None,
+            None,
+        )
+    }
+
+    /// Convenience method for building DHCP server responses
+    ///
+    /// # Arguments
+    ///
+    /// * `destination` - Destination MAC address as a 6-byte array
+    /// * `payload` - The DHCP payload as a vector of bytes
+    /// * `source_ip` - Source IPv4 address from which the DHCP packet originates
+    /// * `destination_ip` - Destination IPv4 address to which the DHCP packet is sent
+    /// * `identification` - IPv4 packet identification field for fragmentation
+    pub fn from_dhcp_response(
+        destination: [u8; 6],
+        payload: Vec<u8>,
+        source_ip: Ipv4Addr,
+        destination_ip: Ipv4Addr,
+        identification: u16,
+    ) -> Self {
+        Self::from_dhcp(
+            destination,
+            payload,
+            source_ip,
+            destination_ip,
+            67, // DHCP server port
+            68, // DHCP client port
+            identification,
+        )
+    }
+
+    /// Serialize the Ethernet frame into a byte vector suitable for sending
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut frame = Vec::with_capacity(14 + self.payload.len());
         frame.extend_from_slice(&self.destination);
@@ -86,16 +188,30 @@ impl EthernetFrame {
         frame
     }
 
-    /// Send the Ethernet frame on a raw socket on the given interface.
-    /// Consumes the EthernetFrame.
+    /// Send the Ethernet frame on the specified interface using a raw socket
+    ///
+    /// # Arguments
+    ///
+    /// * `iface_name` - Name of the network interface to send the Ethernet frame on (e.g. "eth0")
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` on successful transmission, or an `io::Error` if socket creation,
+    /// interface lookup, frame sending, or other system calls fail.
+    ///
+    /// This method opens a raw AF_PACKET socket, retrieves the interface index and MAC address,
+    /// builds a sockaddr_ll for sending, and sends the Ethernet frame bytes directly.
     pub fn send_on(mut self, iface_name: &str) -> std::io::Result<()> {
         use nix::libc;
         use std::ffi::CString;
         use std::io::{Error, ErrorKind};
 
-        debug!("Preparing to send Ethernet frame on interface '{}'", iface_name);
+        debug!(
+            "Preparing to send Ethernet frame on interface '{}'",
+            iface_name
+        );
 
-        // Open a raw socket for sending Ethernet frames
+        // Open raw socket to send Ethernet frames
         let socket_fd = unsafe {
             libc::socket(
                 libc::AF_PACKET,
@@ -110,7 +226,7 @@ impl EthernetFrame {
         }
         debug!("Raw socket opened with fd {}", socket_fd);
 
-        // Prepare sockaddr_ll address
+        // Convert interface name to CString
         let ifname_c = match CString::new(iface_name) {
             Ok(name) => {
                 debug!("Interface name converted to CString successfully");
@@ -118,12 +234,17 @@ impl EthernetFrame {
             }
             Err(_) => {
                 error!("Invalid interface name provided: '{}'", iface_name);
-                unsafe { libc::close(socket_fd); }
-                return Err(Error::new(ErrorKind::InvalidInput, "Invalid interface name"));
+                unsafe {
+                    libc::close(socket_fd);
+                }
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    "Invalid interface name",
+                ));
             }
         };
 
-        // Get interface index
+        // Retrieve interface index using ioctl
         let if_index = unsafe {
             let mut ifr: libc::ifreq = std::mem::zeroed();
             // Copy interface name (up to IFNAMSIZ)
@@ -175,6 +296,7 @@ impl EthernetFrame {
         }
         debug!("Interface '{}' has index {}", iface_name, if_index);
 
+        // Prepare sockaddr_ll struct for sendto
         let mut sll: libc::sockaddr_ll = unsafe { std::mem::zeroed() };
         sll.sll_family = libc::AF_PACKET as libc::c_ushort;
         sll.sll_ifindex = if_index;
@@ -219,35 +341,41 @@ impl EthernetFrame {
             return Err(err);
         }
 
-        debug!("Ethernet frame sent successfully, bytes sent: {}", send_result);
+        debug!(
+            "Ethernet frame sent successfully, bytes sent: {}",
+            send_result
+        );
 
         Ok(())
     }
 }
 
-/// IPv4 frame header
+/// IPv4 packet structure with header and payload
+/// Supports optional IP header options, computes checksums as needed
 pub struct IpFrame {
-    pub version_ihl: u8,          // Version and IHL (header length)
-    pub dscp_ecn: u8,             // DSCP and ECN
-    pub total_length: u16,        // Total length (header + data)
-    pub identification: u16,      // Identification
-    pub flags_fragment: u16,      // Flags + Fragment offset
-    pub ttl: u8,                  // Time to live
-    pub protocol: u8,             // Protocol (e.g. 17 for UDP)
-    pub header_checksum: u16,     // Header checksum (computed)
-    pub source: Ipv4Addr,         // Source IP
-    pub destination: Ipv4Addr,    // Destination IP
-    pub options: Option<Vec<u8>>, // Optional IP header options
-    pub payload: Vec<u8>,         // Payload data (e.g. UDP frame)
+    pub version_ihl: u8,          // Combined version and header length (IHL)
+    pub dscp_ecn: u8, // Differentiated Services Code Point and Explicit Congestion Notification
+    pub total_length: u16, // Total length of IP packet (header + payload)
+    pub identification: u16, // Identification field
+    pub flags_fragment: u16, // Flags and fragment offset
+    pub ttl: u8,      // Time To Live
+    pub protocol: u8, // Encapsulated protocol number (e.g. 17 for UDP)
+    pub header_checksum: u16, // Header checksum (auto-computed)
+    pub source: Ipv4Addr, // Source IP address
+    pub destination: Ipv4Addr, // Destination IP address
+    pub options: Option<Vec<u8>>, // Optional header options
+    pub payload: Vec<u8>, // Encapsulated payload bytes
 }
 
 impl IpFrame {
+    /// Constructs a new IP frame from given parameters
+    /// Automatically calculates IHL, total length, and zeroes checksum for later calculation
     pub fn new(
         source: Ipv4Addr,
         destination: Ipv4Addr,
         protocol: u8,
         payload: Vec<u8>,
-        options: Option<Vec<u8>>, // defaults to None
+        options: Option<Vec<u8>>, // default None
         identification: u16,
         ttl: u8,
     ) -> Self {
@@ -267,7 +395,7 @@ impl IpFrame {
             flags_fragment: 0,
             ttl,
             protocol,
-            header_checksum: 0, // will compute later
+            header_checksum: 0, // to be computed later
             source,
             destination,
             options,
@@ -275,6 +403,8 @@ impl IpFrame {
         }
     }
 
+    /// Convenience method to build an IP frame carrying a UDP frame
+    /// Handles encapsulation of UDP into IP packet with specified identification, ttl, and optional options
     pub fn udp(
         mut udp_frame: UdpFrame,
         identification: u16,
@@ -306,7 +436,8 @@ impl IpFrame {
         }
     }
 
-    /// Compute IP header checksum
+    /// Compute IP header checksum over given header bytes
+    /// Implements standard checksum algorithm for IP headers
     fn compute_checksum(header: &[u8]) -> u16 {
         let mut sum = 0u32;
         let mut i = 0;
@@ -327,7 +458,7 @@ impl IpFrame {
         !(sum as u16)
     }
 
-    /// Build the complete IPv4 header (without payload) as bytes
+    /// Build IPv4 header bytes, compute and fill the checksum
     pub fn build_header(&mut self) -> Vec<u8> {
         let ihl_bytes = (self.version_ihl & 0x0f) * 4;
         let mut header = Vec::with_capacity(ihl_bytes as usize);
@@ -353,7 +484,7 @@ impl IpFrame {
         header
     }
 
-    /// Build the full IP frame (header + payload)
+    /// Serialize the full IP frame including header and payload
     pub fn to_bytes(&mut self) -> Vec<u8> {
         let header = self.build_header();
         let mut frame = Vec::with_capacity(header.len() + self.payload.len());
@@ -363,7 +494,9 @@ impl IpFrame {
     }
 }
 
-/// UDP frame header
+/// UDP frame structure
+/// Contains source/destination ports, length, checksum and payload data
+/// Also includes source and destination IP addresses for checksum calculation
 pub struct UdpFrame {
     pub source_port: u16,
     pub destination_port: u16,
@@ -375,6 +508,8 @@ pub struct UdpFrame {
 }
 
 impl UdpFrame {
+    /// Create a new UDP frame with given ports and payload
+    /// Length is computed from payload + UDP header size
     pub fn new(
         source_port: u16,
         destination_port: u16,
@@ -388,18 +523,19 @@ impl UdpFrame {
             source_port,
             destination_port,
             length,
-            checksum: 0, // to be computed
+            checksum: 0, // checksum will be computed later
             payload,
             source_ip,
             destination_ip,
         }
     }
 
-    /// Compute UDP checksum with pseudo-header
+    /// Compute UDP checksum including pseudo-header
+    /// This function sums the UDP header, payload, and pseudo-header fields (source/destination IPs, protocol, UDP length)
     fn compute_checksum(&self, buf: &[u8]) -> u16 {
         let mut sum = 0u32;
 
-        // Pseudo-header fields
+        // Pseudo-header fields: source IP
         let src = self.source_ip.octets();
         let dst = self.destination_ip.octets();
         let protocol = 17u8;
@@ -417,7 +553,7 @@ impl UdpFrame {
         sum = sum.wrapping_add(protocol as u32);
         sum = sum.wrapping_add(udp_length as u32);
 
-        // UDP header + payload
+        // Add UDP header and payload
         let mut i = 0;
         while i < buf.len() {
             let word = if i + 1 < buf.len() {
@@ -429,7 +565,7 @@ impl UdpFrame {
             i += 2;
         }
 
-        // Add carries
+        // Fold 32-bit sum to 16 bits and complement
         while (sum >> 16) != 0 {
             sum = (sum & 0xffff) + (sum >> 16);
         }
@@ -437,7 +573,7 @@ impl UdpFrame {
         !(sum as u16)
     }
 
-    /// Build UDP header + payload bytes
+    /// Serializes UDP header and payload, computes checksum and inserts it into header
     pub fn to_bytes(&mut self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(self.length as usize);
         buf.push((self.source_port >> 8) as u8);
@@ -458,6 +594,7 @@ impl UdpFrame {
     }
 }
 
+// Module unit tests for UDPStack primitives
 #[cfg(test)]
 mod tests {
     use super::*;

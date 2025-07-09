@@ -28,11 +28,19 @@ async fn main() {
             let chaddr = packet.client_hardware_address();
             let siaddr = std::net::Ipv4Addr::new(172, 20, 0, 10);
             let yiaddr = std::net::Ipv4Addr::new(172, 20, 0, 100);
-            let offer = server::ServerPacket::offer(xid, yiaddr, chaddr, siaddr, None);
+            let mut offer = server::ServerPacket::offer(xid, yiaddr, chaddr, siaddr, None);
+            offer = offer.with_giaddr(std::net::Ipv4Addr::new(172, 20, 0, 1));
             request.respond(offer).await;
         }
-        ClientPacket::DhcpRequest { .. } => {
+        ClientPacket::DhcpRequest { request, packet } => {
             info!("DHCP Request");
+            let xid = packet.transmission_id();
+            let chaddr = packet.client_hardware_address();
+            let siaddr = std::net::Ipv4Addr::new(172, 20, 0, 10);
+            let yiaddr = std::net::Ipv4Addr::new(172, 20, 0, 100);
+            let mut ack = server::ServerPacket::ack(xid, yiaddr, chaddr, siaddr, None);
+            ack = ack.with_giaddr(std::net::Ipv4Addr::new(172, 20, 0, 1));
+            request.respond(ack).await;
         }
         ClientPacket::DhcpRelease { .. } => {
             info!("DHCP Release");

@@ -14,12 +14,6 @@ ip a
 sleep 1
 
 echo "Starting the DHCP client..."
-tcpdump -i eth0 -n -s 0 -vvv -e -l port 68 and port 67 &
+tcpdump -i eth0 -n -s 0 -vvv -e -XX -l port 68 and port 67 &
 dhclient -v eth0
 kill $!
-#which server
-#ls -la $(which server)
-#stat $(which server)
-
-#chmod +x $(which server)
-#server

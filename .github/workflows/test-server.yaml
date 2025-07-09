@@ -26,18 +26,22 @@ jobs:
       - name: Build Example Server
         run: cargo build --release --examples
 
-      - name: Cache apt cache
+      - name: Prepare package list
+        run: |
+          echo "docker-compose" >> apt-packages.txt
+
+      - name: Cache APT packages
         uses: actions/cache@v3
         with:
           path: /var/cache/apt
-          key: ${{ runner.os }}-apt-cache
+          key: ${{ runner.os }}-apt-${{ hashFiles('apt-packages.txt') }}
           restore-keys: |
-            ${{ runner.os }}-apt-cache
+            ${{ runner.os }}-apt-
 
-      - name: Set up Docker
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y docker-compose
+          sudo xargs -a apt-packages.txt apt-get install -y
 
       - name: Build and run DHCP server and client
         run: |

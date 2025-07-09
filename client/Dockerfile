@@ -2,8 +2,6 @@ FROM ubuntu:latest
 
 RUN apt-get update && apt-get install -y isc-dhcp-server iproute2 isc-dhcp-client tcpdump
 
-RUN echo 'send dhcp-broadcast-flag 1;' > /etc/dhcp/dhclient.conf
-
 COPY start.sh /usr/local/bin/start.sh
 RUN chmod +x /usr/local/bin/start.sh
 

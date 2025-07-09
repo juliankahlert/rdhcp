@@ -461,7 +461,7 @@ impl From<ServerPacket> for DhcpPacket {
                 let header = DhcpHeader {
                     op: DhcpOpCode::Response,
                     htype: DhcpHType::Ethernet,
-                    hlen: chaddr.len() as u8,
+                    hlen: 6 as u8,
                     hops: 0,
                     xid,
                     secs: 0,
@@ -505,7 +505,7 @@ impl From<ServerPacket> for DhcpPacket {
                 let header = DhcpHeader {
                     op: DhcpOpCode::Response,
                     htype: DhcpHType::Ethernet,
-                    hlen: chaddr.len() as u8,
+                    hlen: 6 as u8,
                     hops: 0,
                     xid,
                     secs: 0,
@@ -544,7 +544,7 @@ impl From<ServerPacket> for DhcpPacket {
                 let header = DhcpHeader {
                     op: DhcpOpCode::Response,
                     htype: DhcpHType::Ethernet,
-                    hlen: chaddr.len() as u8,
+                    hlen: 6 as u8,
                     hops: 0,
                     xid,
                     secs: 0,
