@@ -18,7 +18,7 @@ ip a
 sleep 1
 
 echo "Starting the DHCP server..."
-tcpdump -i eth0 -n -s 0 -vvv -l port 68 and port 67 &
+tcpdump -i eth0 -n -s 0 -vvv -e -l port 68 and port 67 &
 #dhcpd -f -d -lf dhcpd.leases
 which server
 ls -la $(which server)

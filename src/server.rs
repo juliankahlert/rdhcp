@@ -1,5 +1,5 @@
 use crate::permissions::permissions_check_server;
-use crate::{DhcpMessageType, DhcpPacket, parse_dhcp_packet};
+use crate::{parse_dhcp_packet, udpstack, DhcpMessageType, DhcpPacket};
 use lazy_static::lazy_static;
 use log::{debug, error, info, warn};
 use nix::libc::{IP_PKTINFO, IPPROTO_IP, c_int, c_void, setsockopt, socklen_t};
@@ -516,6 +516,55 @@ fn blocking_read_loop(tx: mpsc::Sender<ClientPacket>, respond: mpsc::Sender<Serv
 }
 
 fn blocking_write_loop(mut rx: mpsc::Receiver<ServerPacket>) {
+    debug!("Starting blocking_write_loop");
+
+    let mut id = 1;
+
+    loop {
+        if let Some(server_packet) = rx.blocking_recv() {
+            info!("SENDING RESPONSE {:?}", &server_packet);
+            let chaddr = server_packet.client_hardware_address();
+            let dhcp_packet: DhcpPacket = server_packet.into();
+            let yiaddr = dhcp_packet.your_address();
+            let raw_packet: Vec<u8> = dhcp_packet.into();
+
+            debug!("Raw DHCP packet hex dump:");
+            for (i, chunk) in raw_packet.chunks(16).enumerate() {
+                let mut line = format!("{:04x}: ", i * 16);
+                for byte in chunk {
+                    line.push_str(&format!("{:02x} ", byte));
+                }
+                debug!("{}", line);
+            }
+
+            let eth_frame = udpstack::EthernetFrame::from_datagram(
+                chaddr[..6].try_into().unwrap_or([0xff; 6]),
+                [0; 6],
+                raw_packet,
+                std::net::Ipv4Addr::new(172, 20, 0, 10),
+                yiaddr,
+                67,
+                68,
+                id,
+                None,
+                None,
+            );
+
+            id += 1;
+
+            if let Err(e) = eth_frame.send_on("eth0") {
+                error!("Failed to send Ethernet frame: {}", e);
+            } else {
+                debug!("Sent DHCP response to client with chaddr {:?}", chaddr);
+            }
+        } else {
+            debug!("Write loop channel closed");
+            break;
+        }
+    }
+}
+
+fn _blocking_write_loop(mut rx: mpsc::Receiver<ServerPacket>) {
     debug!("Starting blocking_write_loop");
 
     let rdhcp = EVENT_LOOP.blocking_lock();

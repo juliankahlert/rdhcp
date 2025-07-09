@@ -5,6 +5,7 @@ use std::convert::From;
 
 mod permissions;
 pub mod server;
+pub mod udpstack;
 
 use server::ServerPacket;
 
