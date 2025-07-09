@@ -536,21 +536,6 @@ fn blocking_write_loop(mut rx: mpsc::Receiver<ServerPacket>) {
             let yiaddr = dhcp_packet.your_address();
             let raw_packet: Vec<u8> = dhcp_packet.into();
 
-            debug!("Raw DHCP packet hex dump:");
-            for (i, chunk) in raw_packet.chunks(16).enumerate() {
-                let mut line = format!("{:04x}: ", i * 16);
-                for byte in chunk {
-                    line.push_str(&format!("{:02x} ", byte));
-                }
-                debug!("{}", line);
-            }
-
-            // Send to broadcast address on port 68 since DHCP client listens there
-            let dest_addr = std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
-                yiaddr,
-                68,
-            ));
-
             // Construct the destination MAC address for Ethernet frame
             let dest_mac = &chaddr[..6];
 
@@ -564,17 +549,121 @@ fn blocking_write_loop(mut rx: mpsc::Receiver<ServerPacket>) {
             // Note: This is complex and typically requires root privileges. We'll illustrate the conceptual approach.
 
             use std::os::unix::io::AsRawFd;
-            use libc::{sendto, sockaddr_ll, sockaddr, AF_PACKET, SOCK_DGRAM, ETH_P_ALL};
+            use nix::libc::{sendto, sockaddr_ll, sockaddr, AF_PACKET};
             use std::mem;
+
+            // Build UDP header manually without using byteorder crate
+            // UDP header is 8 bytes:
+            // Source Port (2 bytes), Destination Port (2 bytes),
+            // Length (2 bytes), Checksum (2 bytes)
+            let source_port: u16 = 67;
+            let dest_port: u16 = 68;
+            let udp_length = (8 + raw_packet.len()) as u16;
+            let source_ip = std::net::Ipv4Addr::new(172, 20, 0, 10);
+            let dest_ip = yiaddr;
+
+            // Build IPv4 header manually
+            // IPv4 header is minimum 20 bytes without options
+            // Version (4 bits) + IHL (4 bits) = 0x45 for IPv4, 20 bytes header
+            // Type of Service = 0
+            // Total Length = 20 (IP header) + UDP length
+            // Identification = 0 (can be 0 for simplicity)
+            // Flags + Fragment Offset = 0
+            // TTL = 64 (default)
+            // Protocol = 17 (UDP)
+            // Header checksum = calculated below
+            // Source IP and Destination IP as bytes
+            let ip_version_ihl = 0x45u8;
+            let ip_tos = 0u8;
+            let ip_total_length = (20 + udp_length) as u16;
+            let ip_id = 0u16;
+            let ip_flags_fragment_offset = 0u16;
+            let ip_ttl = 64u8;
+            let ip_protocol = 17u8; // UDP
+            let _ip_checksum = 0u16; // Initially zero for checksum calculation
+
+            let source_ip_bytes = source_ip.octets();
+            let dest_ip_bytes = dest_ip.octets();
+
+            let mut ip_header = Vec::with_capacity(20);
+            ip_header.push(ip_version_ihl);
+            ip_header.push(ip_tos);
+            ip_header.push((ip_total_length >> 8) as u8);
+            ip_header.push((ip_total_length & 0xff) as u8);
+            ip_header.push((ip_id >> 8) as u8);
+            ip_header.push((ip_id & 0xff) as u8);
+            ip_header.push((ip_flags_fragment_offset >> 8) as u8);
+            ip_header.push((ip_flags_fragment_offset & 0xff) as u8);
+            ip_header.push(ip_ttl);
+            ip_header.push(ip_protocol);
+            ip_header.push(0); // checksum placeholder high byte
+            ip_header.push(0); // checksum placeholder low byte
+            ip_header.extend_from_slice(&source_ip_bytes);
+            ip_header.extend_from_slice(&dest_ip_bytes);
+
+            // Calculate IP header checksum
+            let checksum = {
+                let mut sum: u32 = 0;
+                // sum all 16-bit words
+                for i in (0..20).step_by(2) {
+                    let word = ((ip_header[i] as u16) << 8) | (ip_header[i+1] as u16);
+                    sum = sum.wrapping_add(word as u32);
+                }
+                // add carries
+                while (sum >> 16) != 0 {
+                    sum = (sum & 0xFFFF) + (sum >> 16);
+                }
+                !(sum as u16)
+            };
+            // write checksum back to header bytes (bytes 10 and 11)
+            ip_header[10] = (checksum >> 8) as u8;
+            ip_header[11] = (checksum & 0xff) as u8;
+
+            // Build UDP header
+            let mut udp_header = Vec::with_capacity(8);
+            // Source Port
+            udp_header.push((source_port >> 8) as u8);
+            udp_header.push((source_port & 0xff) as u8);
+            // Destination Port
+            udp_header.push((dest_port >> 8) as u8);
+            udp_header.push((dest_port & 0xff) as u8);
+            // Length
+            udp_header.push((udp_length >> 8) as u8);
+            udp_header.push((udp_length & 0xff) as u8);
+            // Checksum, set to 0 for now (optional for UDP)
+            udp_header.push(0);
+            udp_header.push(0);
+
+            // Combine IP header, UDP header and DHCP payload
+            let mut udp_frame = Vec::with_capacity(ip_header.len() + udp_header.len() + raw_packet.len());
+            udp_frame.extend_from_slice(&ip_header);
+            udp_frame.extend_from_slice(&udp_header);
+            udp_frame.extend_from_slice(&raw_packet);
+
+
+
+            debug!("Raw DHCP packet hex dump:");
+            for (i, chunk) in udp_frame.chunks(16).enumerate() {
+                let mut line = format!("{:04x}: ", i * 16);
+                for byte in chunk {
+                    line.push_str(&format!("{:02x} ", byte));
+                }
+                debug!("{}", line);
+            }
 
             unsafe {
                 let fd = socket.blocking_lock().as_raw_fd();
+                // Attempt to get the interface index from the socket bound to 0.0.0.0:67
+                // Assume interface index 1 as fallback (usually "eth0"), better way would be to get interface index dynamically
+
+                let interface_index = 1;
 
                 // Create sockaddr_ll for destination
                 let mut addr: sockaddr_ll = mem::zeroed();
                 addr.sll_family = AF_PACKET as u16;
+                addr.sll_protocol = (0x0800 as u16).to_be(); // ETH_P_IP protocol for IPv4
+                addr.sll_ifindex = interface_index;
                 addr.sll_halen = 6;
-                addr.sll_ifindex = 0; // 0 might not be correct, ideally get interface index for sending
                 // Copy MAC address to sll_addr
                 for i in 0..6 {
                     addr.sll_addr[i] = dest_mac[i];
@@ -585,36 +674,19 @@ fn blocking_write_loop(mut rx: mpsc::Receiver<ServerPacket>) {
 
                 let sent_bytes = sendto(
                     fd,
-                    raw_packet.as_ptr() as *const _,
-                    raw_packet.len(),
+                    udp_frame.as_ptr() as *const _,
+                    udp_frame.len(),
                     0,
                     addr_ptr,
                     mem::size_of::<sockaddr_ll>() as u32,
                 );
 
-                if sent_bytes == raw_packet.len() as isize {
-                    debug!("Sent DHCP response directly to MAC {:?}", dest_mac);
+                if sent_bytes == udp_frame.len() as isize {
+                    debug!("Sent DHCP response directly to MAC {:?} as UDP frame to :68", dest_mac);
                 } else if sent_bytes == -1 {
                     error!("Failed to send DHCP response directly to MAC: {}", std::io::Error::last_os_error());
                 } else {
-                    warn!("Partial packet sent: {} of {} bytes", sent_bytes, raw_packet.len());
-                }
-            }}
-
-            match send_res {
-                Ok(sent) => {
-                    if sent != raw_packet.len() {
-                        warn!(
-                            "Partial packet sent: {} of {} bytes",
-                            sent,
-                            raw_packet.len()
-                        );
-                    } else {
-                        debug!("Sent DHCP response to client with chaddr {:?}", chaddr);
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to send DHCP response: {}", e);
+                    warn!("Partial packet sent: {} of {} bytes", sent_bytes, udp_frame.len());
                 }
             }
         } else {
