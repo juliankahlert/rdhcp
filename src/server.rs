@@ -3,6 +3,7 @@ use crate::{DhcpMessageType, DhcpPacket, parse_dhcp_packet, udpstack};
 use lazy_static::lazy_static;
 use log::{debug, error, info, warn};
 use nix::libc::{IP_PKTINFO, IPPROTO_IP, c_int, c_void, setsockopt, socklen_t};
+use nix::sys::socket::{ControlMessageOwned, MsgFlags, SockaddrStorage, recvmsg};
 use socket2::{Domain, Socket, Type};
 use std::future::Future;
 use std::mem::MaybeUninit;
@@ -380,7 +381,7 @@ impl Server {
 
         rdhcp.socket = Some(Arc::new(Mutex::new(socket)));
         debug!("Socket bound and tasks starting");
-        Ok(start_tasks(tx).await)
+        Ok(start_tasks(tx))
     }
 
     pub async fn accept<F, Fut>(mut f: F) -> tokio::task::JoinHandle<()>
@@ -405,112 +406,147 @@ impl Server {
     }
 }
 
-pub async fn start_tasks(tx: mpsc::Sender<ClientPacket>) -> task::JoinHandle<()> {
+pub fn start_tasks(tx: mpsc::Sender<ClientPacket>) -> task::JoinHandle<()> {
     let (return_tx, return_rx) = mpsc::channel(32);
     task::spawn(async move {
         let task1 = task::spawn_blocking(|| blocking_read_loop(tx, return_tx));
 
         let task2 = task::spawn_blocking(|| blocking_write_loop(return_rx));
 
-        let _ = tokio::join!(task1, task2);
+        let (res1, res2) = tokio::join!(task1, task2);
+
+        match res1 {
+            Ok(_) => debug!("Blocking read loop task terminated successfully"),
+            Err(e) => error!("Blocking read loop task terminated with error: {:?}", e),
+        }
+
+        match res2 {
+            Ok(_) => debug!("Blocking write loop task terminated successfully"),
+            Err(e) => error!("Blocking write loop task terminated with error: {:?}", e),
+        }
     })
 }
 
-// @TODO somehow get acilliary data and get the reciving ip
 fn blocking_read_loop(tx: mpsc::Sender<ClientPacket>, respond: mpsc::Sender<ServerPacket>) {
     debug!("Starting blocking_read_loop");
-    let counter = 0;
-    let mut buf: [MaybeUninit<u8>; 1024] = unsafe { MaybeUninit::uninit().assume_init() };
 
-    let rdhcp = EVENT_LOOP.blocking_lock();
-    let socket = if let Some(ref sock) = rdhcp.socket {
-        debug!("Socket successfully cloned for read loop");
-        sock.clone()
-    } else {
-        error!("Socket not initialized - exiting read loop");
-        return;
+    // Grab the shared socket
+    let socket = {
+        let rdhcp = EVENT_LOOP.blocking_lock();
+        if let Some(sock) = &rdhcp.socket {
+            sock.clone()
+        } else {
+            error!("Socket not initialized - exiting read loop");
+            return;
+        }
     };
-    drop(rdhcp);
+
+    // Prepare buffers
+    let mut buf: [MaybeUninit<u8>; 1024] = unsafe { MaybeUninit::uninit().assume_init() };
+    // space for one in_pktinfo
+    let mut cmsg_space = nix::cmsg_space!(nix::libc::in_pktinfo);
 
     loop {
-        let res = match socket.blocking_lock().recv_from(&mut buf) {
-            Ok((size, src_addr)) => {
-                debug!(
-                    "Received {} bytes from socket by source {:?}",
-                    size, src_addr
-                );
-                // Convert the buffer into a slice of u8
-                let data: Vec<u8> = buf[..size]
-                    .iter()
-                    .map(|b| unsafe { b.assume_init() })
-                    .collect();
+        // Build IoSliceMut
+        let mut iov = [std::io::IoSliceMut::new(unsafe {
+            // SAFETY: We only read into the uninitialized buffer.
+            std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, buf.len())
+        })];
 
-                debug!("Parsing DHCP packet");
-                parse_dhcp_packet(&data)
-            }
+        // recvmsg gives us both payload and control messages
+        let msg = match {
+            let socket = socket.blocking_lock();
+            recvmsg::<SockaddrStorage>(
+                socket.as_raw_fd(),
+                &mut iov,
+                Some(&mut cmsg_space),
+                MsgFlags::empty(),
+            )
+        } {
+            Ok(msg) => msg,
             Err(e) => {
-                error!("Socket receive error: {}", e);
-                Err(e.to_string())
-            }
-        };
-
-        let Ok(pkg) = res else {
-            debug!("Failed to parse DHCP packet, skipping");
-            continue;
-        };
-
-        let Some(msg_type) = pkg.message_type() else {
-            debug!("DHCP packet missing message type, skipping");
-            continue;
-        };
-
-        debug!("Handling DHCP message type: {:?}", msg_type);
-
-        let req = Request {
-            id: counter,
-            data: format!("Event"),
-            respond: respond.clone(),
-        };
-
-        // Only handle client requests
-        let pack = match msg_type {
-            DhcpMessageType::Discover => {
-                debug!("Received Discover message");
-                ClientPacket::DhcpDiscover {
-                    request: req,
-                    packet: pkg,
-                }
-            }
-            DhcpMessageType::Request => {
-                debug!("Received Request message");
-                ClientPacket::DhcpRequest {
-                    request: req,
-                    packet: pkg,
-                }
-            }
-            DhcpMessageType::Decline => {
-                debug!("Received Decline message");
-                ClientPacket::DhcpDecline {
-                    request: req,
-                    packet: pkg,
-                }
-            }
-            DhcpMessageType::Release => {
-                debug!("Received Release message");
-                ClientPacket::DhcpRelease {
-                    request: req,
-                    packet: pkg,
-                }
-            }
-            _ => {
-                debug!("Received unsupported DHCP message type, skipping");
+                error!("recvmsg failed: {}", e);
                 continue;
             }
         };
 
-        if let Err(_) = tx.blocking_send(pack) {
-            info!("Exit the loop if the receiver is closed");
-            continue;
+        // Extract src address
+        let src_addr = msg.address;
+        let size = msg.bytes;
+
+        // Extract interface index and dst IP from control messages
+        let mut recv_ifindex = None;
+        let mut dst_ip = None;
+        if let Ok(cmsgs) = msg.cmsgs() {
+            for cmsg in cmsgs {
+                if let ControlMessageOwned::Ipv4PacketInfo(pktinfo) = cmsg {
+                    recv_ifindex = Some(pktinfo.ipi_ifindex);
+                    // pktinfo.ipi_spec_dst is the local address the packet was sent to
+                    dst_ip = Some(std::net::Ipv4Addr::from(u32::from_be(
+                        pktinfo.ipi_spec_dst.s_addr,
+                    )));
+                    break;
+                }
+            }
+        }
+
+        debug!(
+            "Received {} bytes from {:?} on ifindex {:?} dst_ip {:?}",
+            size, src_addr, recv_ifindex, dst_ip
+        );
+
+        // Convert buffer to Vec<u8>
+        let data = unsafe {
+            // SAFETY: the first `size` bytes are now initialized by recvmsg
+            std::slice::from_raw_parts(buf.as_ptr() as *const u8, size).to_vec()
+        };
+
+        // Parse & dispatch exactly as before
+        let pkg = match parse_dhcp_packet(&data) {
+            Ok(p) => p,
+            Err(e) => {
+                debug!("Failed to parse DHCP packet: {}", e);
+                continue;
+            }
+        };
+
+        let msg_type = match pkg.message_type() {
+            Some(t) => t,
+            None => {
+                debug!("DHCP packet missing message type, skipping");
+                continue;
+            }
+        };
+
+        let req = Request {
+            id: 0, // you might want to increment a counter here
+            data: format!("ifindex={:?} dst_ip={:?}", recv_ifindex, dst_ip),
+            respond: respond.clone(),
+        };
+
+        let pack = match msg_type {
+            DhcpMessageType::Discover => ClientPacket::DhcpDiscover {
+                request: req,
+                packet: pkg,
+            },
+            DhcpMessageType::Request => ClientPacket::DhcpRequest {
+                request: req,
+                packet: pkg,
+            },
+            DhcpMessageType::Decline => ClientPacket::DhcpDecline {
+                request: req,
+                packet: pkg,
+            },
+            DhcpMessageType::Release => ClientPacket::DhcpRelease {
+                request: req,
+                packet: pkg,
+            },
+            _ => continue,
+        };
+
+        if tx.blocking_send(pack).is_err() {
+            info!("Receiver closed, exiting read loop");
+            break;
         }
     }
 }
