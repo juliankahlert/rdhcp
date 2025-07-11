@@ -1,5 +1,6 @@
 use crate::permissions::permissions_check_server;
 use crate::{DhcpMessageType, DhcpPacket, parse_dhcp_packet, udpstack};
+use crate::interfaces::Interface;
 use lazy_static::lazy_static;
 use log::{debug, error, info, warn};
 use nix::libc::{IP_PKTINFO, IPPROTO_IP, c_int, c_void, setsockopt, socklen_t};
@@ -606,7 +607,7 @@ fn blocking_write_loop(mut rx: mpsc::Receiver<ServerPacket>) {
         if let Some(server_packet) = rx.blocking_recv() {
             info!("SENDING RESPONSE {:?}", &server_packet);
             let chaddr = server_packet.client_hardware_address();
-            let if_index = server_packet.req_if_index();
+            let ifindex = server_packet.req_if_index();
             let dhcp_packet: DhcpPacket = server_packet.into();
             let yiaddr = dhcp_packet.your_address();
             let raw_packet: Vec<u8> = dhcp_packet.into();
@@ -620,15 +621,25 @@ fn blocking_write_loop(mut rx: mpsc::Receiver<ServerPacket>) {
                 debug!("{}", line);
             }
 
+            if ifindex <= 0 {
+                error!("Invalid interface index: {}", ifindex);
+                continue;
+            }
+
+            let Ok(interface) = Interface::from_index(ifindex as u32) else {
+                error!("Failed to find interface for index {}", ifindex);
+                continue;
+            };
+
             let eth_frame = udpstack::EthernetFrame::from_dhcp_response(
                 chaddr[..6].try_into().unwrap_or([0xff; 6]),
                 raw_packet,
-                std::net::Ipv4Addr::new(172, 20, 0, 10),
+                interface.paddr,
                 yiaddr,
                 id,
             );
 
-            if let Err(e) = eth_frame.send_on(if_index) {
+            if let Err(e) = eth_frame.send_on(interface) {
                 error!("Failed to send Ethernet frame: {}", e);
             } else {
                 debug!("Sent DHCP response to client with chaddr {:?}", chaddr);

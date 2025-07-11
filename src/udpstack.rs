@@ -205,13 +205,7 @@ impl EthernetFrame {
     ///
     /// This method opens a raw AF_PACKET socket, retrieves the interface index and MAC address,
     /// builds a sockaddr_ll for sending, and sends the Ethernet frame bytes directly.
-    pub fn send_on(mut self, ifindex: i32) -> anyhow::Result<()> {
-        if ifindex <= 0 {
-            error!("Invalid interface index: {}", ifindex);
-            return Err(anyhow!("Invalid interface index"));
-        }
-
-        let interface = Interface::from_index(ifindex as u32)?;
+    pub fn send_on(mut self, interface: Interface) -> anyhow::Result<()> {
 
         debug!("Preparing to send Ethernet frame on {:?}", interface);
 
