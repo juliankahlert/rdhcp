@@ -2,7 +2,7 @@ use crate::permissions::permissions_check_server;
 use crate::{DhcpMessageType, DhcpPacket, parse_dhcp_packet, udpstack};
 use crate::interfaces::Interface;
 use lazy_static::lazy_static;
-use log::{debug, error, info, warn};
+use log::{debug, error, info, warn, trace};
 use nix::libc::{IP_PKTINFO, IPPROTO_IP, c_int, c_void, setsockopt, socklen_t};
 use nix::sys::socket::{ControlMessageOwned, MsgFlags, SockaddrStorage, recvmsg};
 use socket2::{Domain, Socket, Type};
@@ -612,13 +612,13 @@ fn blocking_write_loop(mut rx: mpsc::Receiver<ServerPacket>) {
             let yiaddr = dhcp_packet.your_address();
             let raw_packet: Vec<u8> = dhcp_packet.into();
 
-            debug!("Raw DHCP packet hex dump:");
+            trace!("Raw DHCP packet hex dump:");
             for (i, chunk) in raw_packet.chunks(16).enumerate() {
                 let mut line = format!("{:04x}: ", i * 16);
                 for byte in chunk {
                     line.push_str(&format!("{:02x} ", byte));
                 }
-                debug!("{}", line);
+                trace!("{}", line);
             }
 
             if ifindex <= 0 {

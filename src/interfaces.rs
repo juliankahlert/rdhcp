@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
 use nix::ifaddrs::getifaddrs;
-use nix::libc::{if_indextoname, if_nametoindex};
+use nix::libc::{c_char, if_indextoname, if_nametoindex};
 use std::ffi::{CStr, CString};
 
 #[derive(Debug)]
@@ -51,7 +51,9 @@ fn get_interface_index(name: &str) -> Result<u32> {
 
 fn get_interface_name(index: u32) -> Result<String> {
     let mut buf = [0 as u8; nix::libc::IF_NAMESIZE];
-    let ptr = unsafe { if_indextoname(index, buf.as_mut_ptr()) };
+    let ptr = unsafe {
+        if_indextoname(index, buf.as_mut_ptr() as *mut c_char)
+    };
     if ptr.is_null() {
         Err(anyhow!("Unable to get name for interface index {}", index))
     } else {
