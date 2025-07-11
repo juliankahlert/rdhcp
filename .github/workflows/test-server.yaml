@@ -8,19 +8,50 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Set up Docker
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build Example Server
+        run: cargo build --release --examples
+
+      - name: Prepare package list
+        run: |
+          echo "docker-compose" >> apt-packages.txt
+
+      - name: Cache APT packages
+        uses: actions/cache@v3
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-apt-${{ hashFiles('apt-packages.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-apt-
+
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y docker-compose
+          sudo xargs -a apt-packages.txt apt-get install -y
 
       - name: Build and run DHCP server and client
         run: |
           docker-compose up --build -d
-          sleep 10  # Give it time to assign an IP
+          sleep 60  # Give it time to assign an IP
           echo "============ server logs ============"
           docker logs rdhcp_dhcp-server_1
           echo "============ client logs ============"
           docker logs rdhcp_dhcp-client_1
+          echo "====================================="
 
       - name: Check logs for successful DHCP lease
         run: |
