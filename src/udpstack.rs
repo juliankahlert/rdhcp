@@ -1,4 +1,8 @@
+use crate::interfaces::Interface;
+use anyhow::anyhow;
 use log::{debug, error};
+use nix::libc;
+use std::io::Error;
 use std::net::Ipv4Addr;
 
 /// Ethernet frame structure for Layer 2 networking
@@ -201,20 +205,15 @@ impl EthernetFrame {
     ///
     /// This method opens a raw AF_PACKET socket, retrieves the interface index and MAC address,
     /// builds a sockaddr_ll for sending, and sends the Ethernet frame bytes directly.
-    pub fn send_on(mut self, if_index: i32) -> std::io::Result<()> {
-        use nix::libc;
-        //use std::ffi::CString;
-        use std::io::{Error, ErrorKind};
-
-        if if_index <= 0 {
-            error!("Invalid interface index: {}", if_index);
-            return Err(Error::new(ErrorKind::Other, "Invalid interface index"));
+    pub fn send_on(mut self, ifindex: i32) -> anyhow::Result<()> {
+        if ifindex <= 0 {
+            error!("Invalid interface index: {}", ifindex);
+            return Err(anyhow!("Invalid interface index"));
         }
 
-        debug!(
-            "Preparing to send Ethernet frame on interface '{}'",
-            if_index
-        );
+        let interface = Interface::from_index(ifindex as u32)?;
+
+        debug!("Preparing to send Ethernet frame on {:?}", interface);
 
         // Open raw socket to send Ethernet frames
         let socket_fd = unsafe {
@@ -227,7 +226,7 @@ impl EthernetFrame {
         if socket_fd < 0 {
             let err = Error::last_os_error();
             error!("Failed to open raw socket: {}", err);
-            return Err(err);
+            return Err(anyhow!("{}", err));
         }
         debug!("Raw socket opened with fd {}", socket_fd);
 
@@ -267,53 +266,53 @@ impl EthernetFrame {
         // };
 
         // Get MAC address (hardware address) using if_index
-        let if_mac = unsafe {
-            let mut ifr: libc::ifreq = std::mem::zeroed();
-            // Prepare buffer for interface name
-            let mut ifname_buf = [0u8; libc::IFNAMSIZ];
-            // Call if_indextoname to get interface name string
-            if libc::if_indextoname(
-                if_index as u32,
-                ifname_buf.as_mut_ptr() as *mut libc::c_char,
-            )
-            .is_null()
-            {
-                let err = Error::new(ErrorKind::Other, "if_indextoname failed");
-                error!("if_indextoname failed for index {}: {}", if_index, err);
-                libc::close(socket_fd);
-                return Err(err);
-            }
-            // Copy interface name into ifr.ifr_name
-            for (dst, &src) in ifr.ifr_name.iter_mut().zip(ifname_buf.iter()) {
-                *dst = src as libc::c_char;
-            }
-            debug!(
-                "Calling ioctl to get MAC address for interface index {}",
-                if_index
-            );
-            if libc::ioctl(socket_fd, libc::SIOCGIFHWADDR, &mut ifr) < 0 {
-                let err = Error::last_os_error();
-                error!("ioctl SIOCGIFHWADDR failed: {}", err);
-                libc::close(socket_fd);
-                return Err(err);
-            }
-            let sa_data = ifr.ifr_ifru.ifru_hwaddr.sa_data;
-            [
-                sa_data[0] as u8,
-                sa_data[1] as u8,
-                sa_data[2] as u8,
-                sa_data[3] as u8,
-                sa_data[4] as u8,
-                sa_data[5] as u8,
-            ]
-        };
+        // let if_mac = unsafe {
+        //     let mut ifr: libc::ifreq = std::mem::zeroed();
+        //     // Prepare buffer for interface name
+        //     let mut ifname_buf = [0u8; libc::IFNAMSIZ];
+        //     // Call if_indextoname to get interface name string
+        //     if libc::if_indextoname(
+        //         if_index as u32,
+        //         ifname_buf.as_mut_ptr() as *mut libc::c_char,
+        //     )
+        //     .is_null()
+        //     {
+        //         let err = Error::new(ErrorKind::Other, "if_indextoname failed");
+        //         error!("if_indextoname failed for index {}: {}", if_index, err);
+        //         libc::close(socket_fd);
+        //         return Err(err);
+        //     }
+        //     // Copy interface name into ifr.ifr_name
+        //     for (dst, &src) in ifr.ifr_name.iter_mut().zip(ifname_buf.iter()) {
+        //         *dst = src as libc::c_char;
+        //     }
+        //     debug!(
+        //         "Calling ioctl to get MAC address for interface index {}",
+        //         if_index
+        //     );
+        //     if libc::ioctl(socket_fd, libc::SIOCGIFHWADDR, &mut ifr) < 0 {
+        //         let err = Error::last_os_error();
+        //         error!("ioctl SIOCGIFHWADDR failed: {}", err);
+        //         libc::close(socket_fd);
+        //         return Err(err);
+        //     }
+        //     let sa_data = ifr.ifr_ifru.ifru_hwaddr.sa_data;
+        //     [
+        //         sa_data[0] as u8,
+        //         sa_data[1] as u8,
+        //         sa_data[2] as u8,
+        //         sa_data[3] as u8,
+        //         sa_data[4] as u8,
+        //         sa_data[5] as u8,
+        //     ]
+        // };
 
-        self.source = if_mac;
+        self.source = interface.mac;
 
         // Prepare sockaddr_ll struct for sendto
         let mut sll: libc::sockaddr_ll = unsafe { std::mem::zeroed() };
         sll.sll_family = libc::AF_PACKET as libc::c_ushort;
-        sll.sll_ifindex = if_index;
+        sll.sll_ifindex = interface.index;
         sll.sll_halen = 6;
         sll.sll_addr[..6].copy_from_slice(&self.destination);
 
@@ -352,7 +351,7 @@ impl EthernetFrame {
         if send_result < 0 {
             let err = Error::last_os_error();
             error!("Failed to send Ethernet frame: {}", err);
-            return Err(err);
+            return Err(anyhow!("{}", err));
         }
 
         debug!(
