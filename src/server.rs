@@ -1,8 +1,8 @@
+use crate::interfaces::Interface;
 use crate::permissions::permissions_check_server;
 use crate::{DhcpMessageType, DhcpPacket, parse_dhcp_packet, udpstack};
-use crate::interfaces::Interface;
 use lazy_static::lazy_static;
-use log::{debug, error, info, warn, trace};
+use log::{debug, error, info, trace, warn};
 use nix::libc::{IP_PKTINFO, IPPROTO_IP, c_int, c_void, setsockopt, socklen_t};
 use nix::sys::socket::{ControlMessageOwned, MsgFlags, SockaddrStorage, recvmsg};
 use socket2::{Domain, Socket, Type};

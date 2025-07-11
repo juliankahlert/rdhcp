@@ -1,16 +1,17 @@
-use std::fmt;
-use std::net::Ipv4Addr;
-
-use std::convert::From;
-
 pub mod interfaces;
-mod permissions;
 pub mod server;
 pub mod udpstack;
 
-use server::ServerPacket;
+mod defines;
+mod permissions;
 
+use anyhow::{Result, anyhow};
+use defines::*;
 use log::trace;
+use server::ServerPacket;
+use std::convert::From;
+use std::fmt;
+use std::net::Ipv4Addr;
 
 #[repr(C)]
 #[derive(Debug)]
@@ -210,10 +211,6 @@ struct DhcpOption {
     value: Vec<u8>,
 }
 
-const DHCP_HEADER_SIZE: usize = 236;
-const DHCP_MAGIC_COOKIE_SIZE: usize = 4;
-const DHCP_OPTIONS_SIZE: usize = 312;
-
 impl From<DhcpPacket> for Vec<u8> {
     fn from(packet: DhcpPacket) -> Self {
         let mut buffer =
@@ -244,7 +241,6 @@ impl From<DhcpPacket> for Vec<u8> {
         buffer.extend_from_slice(&packet.header.file);
 
         // Magic cookie before options
-        const DHCP_MAGIC_COOKIE: [u8; 4] = [99, 130, 83, 99];
         buffer.extend_from_slice(&DHCP_MAGIC_COOKIE);
 
         // Write options in order
@@ -267,17 +263,6 @@ impl From<DhcpPacket> for Vec<u8> {
         buffer
     }
 }
-
-const DHCP_MESSAGE_TYPE_CODE: u8 = 53;
-const DHCP_OFFER_VALUE: u8 = 2;
-const DHCP_ACK_VALUE: u8 = 5;
-const DHCP_NAK_VALUE: u8 = 6;
-const DHCP_LEASE_TIME_CODE: u8 = 51;
-const DHCP_SERVER_IDENTIFIER_CODE: u8 = 54;
-const DHCP_ROUTER_CODE: u8 = 3;
-const DHCP_DNS_CODE: u8 = 6;
-const DHCP_SUBNET_MASK_CODE: u8 = 1;
-const DHCP_END_CODE: u8 = 255;
 
 impl DhcpOption {
     pub fn message_type(value: u8) -> Self {
@@ -847,9 +832,7 @@ impl DhcpPacket {
 }
 
 fn parse_dhcp_packet_priv(data: &[u8]) -> Option<DhcpPacket> {
-    const HEADER_LEN: usize = 236;
-
-    if data.len() < HEADER_LEN {
+    if data.len() < DHCP_HEADER_SIZE {
         return None;
     }
 
@@ -882,7 +865,6 @@ fn parse_dhcp_options(data: &[u8]) -> Vec<DhcpOption> {
     let mut options = Vec::new();
 
     // Check for the DHCP magic cookie
-    const DHCP_MAGIC_COOKIE: [u8; 4] = [99, 130, 83, 99];
     if data.len() < 4 || data[0..4] != DHCP_MAGIC_COOKIE {
         eprintln!("Invalid DHCP magic cookie");
         return options;
@@ -894,14 +876,8 @@ fn parse_dhcp_options(data: &[u8]) -> Vec<DhcpOption> {
         let code = data[i];
 
         match code {
-            0 => {
-                // Pad option (just move on)
-                i += 1;
-            }
-            255 => {
-                // End option
-                break;
-            }
+            DHCP_PAD_CODE => i += 1,
+            DHCP_END_CODE => break,
             _ => {
                 if i + 1 >= data.len() {
                     eprintln!("Malformed option at index {}", i);
@@ -929,7 +905,7 @@ fn parse_dhcp_options(data: &[u8]) -> Vec<DhcpOption> {
     options
 }
 
-pub fn parse_dhcp_packet(data: &[u8]) -> Result<DhcpPacket, String> {
+pub fn parse_dhcp_packet(data: &[u8]) -> Result<DhcpPacket> {
     if let Some(packet) = parse_dhcp_packet_priv(data) {
         // Decode and display the header information
         packet.decode_header();
@@ -937,54 +913,5 @@ pub fn parse_dhcp_packet(data: &[u8]) -> Result<DhcpPacket, String> {
         return Ok(packet);
     }
 
-    Err("Failed to parse DHCP packet".to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::parse_dhcp_packet;
-    use std::mem::MaybeUninit;
-
-    #[test]
-    fn test() {
-        use socket2::{Domain, Socket, Type};
-        use std::net::SocketAddr;
-
-        let socket = Socket::new(Domain::IPV4, Type::DGRAM, None).unwrap();
-
-        let address: SocketAddr = "0.0.0.0:67".parse().unwrap();
-        // Set SO_REUSEADDR option on the socket
-        socket.set_reuse_address(true).unwrap();
-        // Allow receiving broadcast messages
-        socket.set_broadcast(true).unwrap();
-
-        // Set the socket to non-blocking mode
-        socket.set_nonblocking(false).unwrap();
-
-        // Bind the socket to port 68 (DHCP client port);
-        socket.bind(&address.into()).unwrap();
-
-        println!("Listening for DHCP packets on port 67...");
-
-        loop {
-            // Buffer to store the received data (using MaybeUninit for safety)
-            let mut buf: [MaybeUninit<u8>; 1024] = unsafe { MaybeUninit::uninit().assume_init() };
-
-            match socket.recv_from(&mut buf) {
-                Ok((size, _)) => {
-                    // Convert the buffer into a slice of u8
-                    let data: Vec<u8> = buf[..size]
-                        .iter()
-                        .map(|b| unsafe { b.assume_init() })
-                        .collect();
-
-                    // Process the received DHCP packet
-                    let _ = parse_dhcp_packet(&data);
-                }
-                Err(e) => {
-                    println!("Error reading from socket: {}", e);
-                }
-            }
-        }
-    }
+    Err(anyhow!("Failed to parse DHCP packet"))
 }

@@ -206,7 +206,6 @@ impl EthernetFrame {
     /// This method opens a raw AF_PACKET socket, retrieves the interface index and MAC address,
     /// builds a sockaddr_ll for sending, and sends the Ethernet frame bytes directly.
     pub fn send_on(mut self, interface: Interface) -> anyhow::Result<()> {
-
         debug!("Preparing to send Ethernet frame on {:?}", interface);
 
         // Open raw socket to send Ethernet frames
