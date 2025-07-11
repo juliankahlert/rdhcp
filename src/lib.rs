@@ -457,6 +457,7 @@ impl From<ServerPacket> for DhcpPacket {
                 diaddrs,
                 subnet,
                 options: extra_options,
+                ..
             } => {
                 let header = DhcpHeader {
                     op: DhcpOpCode::Response,
@@ -501,6 +502,7 @@ impl From<ServerPacket> for DhcpPacket {
                 diaddrs,
                 subnet,
                 options: extra_options,
+                ..
             } => {
                 let header = DhcpHeader {
                     op: DhcpOpCode::Response,
@@ -540,6 +542,7 @@ impl From<ServerPacket> for DhcpPacket {
                 chaddr,
                 siaddr,
                 options: extra_options,
+                ..
             } => {
                 let header = DhcpHeader {
                     op: DhcpOpCode::Response,

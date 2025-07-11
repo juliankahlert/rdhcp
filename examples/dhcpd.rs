@@ -23,24 +23,29 @@ async fn main() {
     // Handle requests from the event loop in parallel
     let task = Server::accept(async move |packet: ClientPacket| match packet {
         ClientPacket::DhcpDiscover { request, packet } => {
-            info!("DHCP Discover");
-            let xid = packet.transmission_id();
-            let chaddr = packet.client_hardware_address();
-            let siaddr = std::net::Ipv4Addr::new(172, 20, 0, 10);
-            let yiaddr = std::net::Ipv4Addr::new(172, 20, 0, 100);
-            let mut offer = server::ServerPacket::offer(xid, yiaddr, chaddr, siaddr, None);
-            offer = offer.with_giaddr(std::net::Ipv4Addr::new(172, 20, 0, 1));
-            request.respond(offer).await;
+            if let Some(ifindex) = request.ancillary_data.recv_ifindex {
+                info!("DHCP Discover on {}", ifindex);
+                let xid = packet.transmission_id();
+                let chaddr = packet.client_hardware_address();
+                let siaddr = std::net::Ipv4Addr::new(172, 20, 0, 10);
+                let yiaddr = std::net::Ipv4Addr::new(172, 20, 0, 100);
+                let mut offer =
+                    server::ServerPacket::offer(xid, yiaddr, chaddr, siaddr, None, ifindex);
+                offer = offer.with_giaddr(std::net::Ipv4Addr::new(172, 20, 0, 1));
+                request.respond(offer).await;
+            }
         }
         ClientPacket::DhcpRequest { request, packet } => {
-            info!("DHCP Request");
-            let xid = packet.transmission_id();
-            let chaddr = packet.client_hardware_address();
-            let siaddr = std::net::Ipv4Addr::new(172, 20, 0, 10);
-            let yiaddr = std::net::Ipv4Addr::new(172, 20, 0, 100);
-            let mut ack = server::ServerPacket::ack(xid, yiaddr, chaddr, siaddr, None);
-            ack = ack.with_giaddr(std::net::Ipv4Addr::new(172, 20, 0, 1));
-            request.respond(ack).await;
+            if let Some(ifindex) = request.ancillary_data.recv_ifindex {
+                info!("DHCP Request {}", ifindex);
+                let xid = packet.transmission_id();
+                let chaddr = packet.client_hardware_address();
+                let siaddr = std::net::Ipv4Addr::new(172, 20, 0, 10);
+                let yiaddr = std::net::Ipv4Addr::new(172, 20, 0, 100);
+                let mut ack = server::ServerPacket::ack(xid, yiaddr, chaddr, siaddr, None, ifindex);
+                ack = ack.with_giaddr(std::net::Ipv4Addr::new(172, 20, 0, 1));
+                request.respond(ack).await;
+            }
         }
         ClientPacket::DhcpRelease { .. } => {
             info!("DHCP Release");

@@ -22,11 +22,15 @@ pub struct Server {
 #[derive(Debug)]
 pub struct Request {
     pub id: usize,
-    pub data: String,
+    pub ancillary_data: AncillaryData,
     respond: mpsc::Sender<ServerPacket>,
 }
 
 use std::fmt;
+
+pub struct ServerPacketMeta {
+    req_if_index: i32, // interface index the request was received on
+}
 
 pub enum ServerPacket {
     DhcpOffer {
@@ -39,6 +43,7 @@ pub enum ServerPacket {
         diaddrs: Vec<std::net::Ipv4Addr>, // DNS server IPs assigned to the client (Default 8.8.8.8, 8.8.4.4)
         subnet: std::net::Ipv4Addr, // Subnet mask assigned to the client (Default 255.255.255.0)
         options: Vec<(u8, Vec<u8>)>, // Additional DHCP options
+        meta: ServerPacketMeta,     // metadata for the packet
     },
     DhcpAck {
         xid: u32,                         // Transaction ID
@@ -50,12 +55,14 @@ pub enum ServerPacket {
         diaddrs: Vec<std::net::Ipv4Addr>, // DNS server IPs assigned to the client (Default 8.8.8.8, 8.8.4.4)
         subnet: std::net::Ipv4Addr, // Subnet mask assigned to the client (Default 255.255.255.0)
         options: Vec<(u8, Vec<u8>)>, // Additional DHCP options
+        meta: ServerPacketMeta,     // metadata for the packet
     },
     DhcpNak {
         xid: u32,                    // Transmission ID
         chaddr: [u8; 16],            // Client hardware address (chaddr)
         siaddr: std::net::Ipv4Addr,  // Server IP address for options later
         options: Vec<(u8, Vec<u8>)>, // Additional DHCP options
+        meta: ServerPacketMeta,      // metadata for the packet
     },
 }
 
@@ -72,6 +79,7 @@ impl fmt::Debug for ServerPacket {
                 diaddrs,
                 subnet,
                 options,
+                ..
             } => f
                 .debug_struct("DhcpOffer")
                 .field("xid", &format_args!("{:#x}", xid))
@@ -94,6 +102,7 @@ impl fmt::Debug for ServerPacket {
                 diaddrs,
                 subnet,
                 options,
+                ..
             } => f
                 .debug_struct("DhcpAck")
                 .field("xid", &format_args!("{:#x}", xid))
@@ -111,6 +120,7 @@ impl fmt::Debug for ServerPacket {
                 chaddr,
                 siaddr,
                 options,
+                ..
             } => f
                 .debug_struct("DhcpNak")
                 .field("xid", &format_args!("{:#x}", xid))
@@ -144,6 +154,7 @@ impl ServerPacket {
         chaddr: [u8; 16],
         siaddr: std::net::Ipv4Addr,
         subnet: Option<std::net::Ipv4Addr>,
+        if_index: i32,
     ) -> Self {
         let snaddr = if let Some(addr) = subnet {
             addr
@@ -164,6 +175,9 @@ impl ServerPacket {
             ],
             subnet: snaddr,
             options: Vec::new(),
+            meta: ServerPacketMeta {
+                req_if_index: if_index,
+            },
         }
     }
 
@@ -173,6 +187,7 @@ impl ServerPacket {
         chaddr: [u8; 16],
         siaddr: std::net::Ipv4Addr,
         subnet: Option<std::net::Ipv4Addr>,
+        if_index: i32,
     ) -> Self {
         let snaddr = if let Some(addr) = subnet {
             addr
@@ -193,15 +208,21 @@ impl ServerPacket {
             ],
             subnet: snaddr,
             options: Vec::new(),
+            meta: ServerPacketMeta {
+                req_if_index: if_index,
+            },
         }
     }
 
-    pub fn nak(xid: u32, chaddr: [u8; 16], siaddr: std::net::Ipv4Addr) -> Self {
+    pub fn nak(xid: u32, chaddr: [u8; 16], siaddr: std::net::Ipv4Addr, if_index: i32) -> Self {
         ServerPacket::DhcpNak {
             xid,
             chaddr,
             siaddr,
             options: Vec::new(),
+            meta: ServerPacketMeta {
+                req_if_index: if_index,
+            },
         }
     }
 
@@ -257,6 +278,14 @@ impl ServerPacket {
             }
         }
         self
+    }
+
+    pub fn req_if_index(&self) -> i32 {
+        match &self {
+            ServerPacket::DhcpOffer { meta, .. } => meta.req_if_index,
+            ServerPacket::DhcpAck { meta, .. } => meta.req_if_index,
+            ServerPacket::DhcpNak { meta, .. } => meta.req_if_index,
+        }
     }
 }
 
@@ -427,6 +456,34 @@ pub fn start_tasks(tx: mpsc::Sender<ClientPacket>) -> task::JoinHandle<()> {
     })
 }
 
+#[derive(Debug)]
+pub struct AncillaryData {
+    pub recv_ifindex: Option<i32>,
+    pub dst_ip: Option<std::net::Ipv4Addr>,
+}
+
+fn extract_ancillary_data<T>(msg: &nix::sys::socket::RecvMsg<T>) -> Result<AncillaryData, String> {
+    let mut recv_ifindex = None;
+    let mut dst_ip = None;
+
+    let cmsgs = msg
+        .cmsgs()
+        .map_err(|e| format!("Failed to get control messages: {}", e))?;
+    for cmsg in cmsgs {
+        if let ControlMessageOwned::Ipv4PacketInfo(pktinfo) = cmsg {
+            recv_ifindex = Some(pktinfo.ipi_ifindex);
+            dst_ip = Some(std::net::Ipv4Addr::from(u32::from_be(
+                pktinfo.ipi_spec_dst.s_addr,
+            )));
+            break;
+        }
+    }
+    Ok(AncillaryData {
+        recv_ifindex,
+        dst_ip,
+    })
+}
+
 fn blocking_read_loop(tx: mpsc::Sender<ClientPacket>, respond: mpsc::Sender<ServerPacket>) {
     debug!("Starting blocking_read_loop");
 
@@ -470,29 +527,19 @@ fn blocking_read_loop(tx: mpsc::Sender<ClientPacket>, respond: mpsc::Sender<Serv
             }
         };
 
-        // Extract src address
-        let src_addr = msg.address;
         let size = msg.bytes;
 
-        // Extract interface index and dst IP from control messages
-        let mut recv_ifindex = None;
-        let mut dst_ip = None;
-        if let Ok(cmsgs) = msg.cmsgs() {
-            for cmsg in cmsgs {
-                if let ControlMessageOwned::Ipv4PacketInfo(pktinfo) = cmsg {
-                    recv_ifindex = Some(pktinfo.ipi_ifindex);
-                    // pktinfo.ipi_spec_dst is the local address the packet was sent to
-                    dst_ip = Some(std::net::Ipv4Addr::from(u32::from_be(
-                        pktinfo.ipi_spec_dst.s_addr,
-                    )));
-                    break;
-                }
+        let ancillary = match extract_ancillary_data(&msg) {
+            Ok(data) => data,
+            Err(e) => {
+                error!("Failed to extract ancillary data: {}", e);
+                continue;
             }
-        }
+        };
 
         debug!(
-            "Received {} bytes from {:?} on ifindex {:?} dst_ip {:?}",
-            size, src_addr, recv_ifindex, dst_ip
+            "Received {} bytes on ifindex {:?} dst_ip {:?}",
+            size, ancillary.recv_ifindex, ancillary.dst_ip
         );
 
         // Convert buffer to Vec<u8>
@@ -501,11 +548,10 @@ fn blocking_read_loop(tx: mpsc::Sender<ClientPacket>, respond: mpsc::Sender<Serv
             std::slice::from_raw_parts(buf.as_ptr() as *const u8, size).to_vec()
         };
 
-        // Parse & dispatch exactly as before
         let pkg = match parse_dhcp_packet(&data) {
             Ok(p) => p,
             Err(e) => {
-                debug!("Failed to parse DHCP packet: {}", e);
+                warn!("Failed to parse DHCP packet: {}", e);
                 continue;
             }
         };
@@ -520,7 +566,7 @@ fn blocking_read_loop(tx: mpsc::Sender<ClientPacket>, respond: mpsc::Sender<Serv
 
         let req = Request {
             id: 0, // you might want to increment a counter here
-            data: format!("ifindex={:?} dst_ip={:?}", recv_ifindex, dst_ip),
+            ancillary_data: ancillary,
             respond: respond.clone(),
         };
 
@@ -560,6 +606,7 @@ fn blocking_write_loop(mut rx: mpsc::Receiver<ServerPacket>) {
         if let Some(server_packet) = rx.blocking_recv() {
             info!("SENDING RESPONSE {:?}", &server_packet);
             let chaddr = server_packet.client_hardware_address();
+            let if_index = server_packet.req_if_index();
             let dhcp_packet: DhcpPacket = server_packet.into();
             let yiaddr = dhcp_packet.your_address();
             let raw_packet: Vec<u8> = dhcp_packet.into();
@@ -581,7 +628,7 @@ fn blocking_write_loop(mut rx: mpsc::Receiver<ServerPacket>) {
                 id,
             );
 
-            if let Err(e) = eth_frame.send_on("eth0") {
+            if let Err(e) = eth_frame.send_on(if_index) {
                 error!("Failed to send Ethernet frame: {}", e);
             } else {
                 debug!("Sent DHCP response to client with chaddr {:?}", chaddr);
